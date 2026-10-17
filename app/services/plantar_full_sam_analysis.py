@@ -2,8 +2,8 @@
 
 The production path is intentionally isolated from every GPT/OpenAI and tinea
 analysis path. Hardware photos are rotated 90 degrees clockwise before YOLO
-foot detection. Contact inputs use original pixels with brightness gain 1.0
-for the left foot and 2.0 for the right, and contrast 1.4 about mean sole luminance.
+foot detection. Detection, contact inputs, and displays preserve the original
+sole RGB values on both feet without brightness or contrast correction.
 SegFormer-B0 predicts the original and horizontally flipped crops; only their
 restored binary intersection is
 retained inside the YOLO silhouette. Saved displays preserve the same fixed
@@ -65,8 +65,6 @@ from app.services.tinea_analysis import TineaAnalysisResult
 
 
 PIPELINE_VERSION = "local-segformer-b0-contact-v2"
-CONTACT_BRIGHTNESS_GAINS = {"left": 1.0, "right": 2.0}
-CONTACT_CONTRAST_FACTOR = 1.4
 CAPTURE_ORIENTATION_POLICY = "preserve_preprocessed_capture_orientation_v1"
 CHECKPOINT_FORMAT = "feetfit_plantar_full_sam_decoder_v1"
 SELECTION_POLICY = (
@@ -155,8 +153,7 @@ class _PreparedPlantarCanvas:
     audit_base: dict[str, Any]
     yolo_confidence: float
     orientation_confidence: float
-    # Required display of the gain/contrast model input, aligned to the canvas.
-    # The original clean/pathology image must never replace this RGB base.
+    # Original photographed sole used as the background for contact overlays.
     contact_display_rgba: np.ndarray
 
 
@@ -176,11 +173,11 @@ def _prepare_contact_model_input(
     sole_mask: np.ndarray,
     side: str,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    """Apply the reviewed gain/contrast recipe once to original source pixels."""
+    """Preserve original sole pixels and whiten only the background."""
     sole = np.asarray(sole_mask) > 0
     source = np.asarray(original_crop)
     if (
-        side not in CONTACT_BRIGHTNESS_GAINS
+        side not in {"left", "right"}
         or source.dtype != np.uint8
         or source.ndim != 3
         or source.shape[2] != 3
@@ -188,26 +185,17 @@ def _prepare_contact_model_input(
         or not bool(sole.any())
     ):
         raise PlantarFullSamAnalysisError("Invalid original plantar contact crop.")
-    gain = CONTACT_BRIGHTNESS_GAINS[side]
-    gained = np.clip(source.astype(np.float32) * gain, 0, 255).astype(np.uint8)
-    sole_pixels = gained[sole].astype(np.float32)
-    pivot = float(np.mean(
-        sole_pixels @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
-    ))
-    enhanced = np.full(source.shape, 255, dtype=np.uint8)
-    enhanced[sole] = np.rint(np.clip(
-        (sole_pixels - pivot) * CONTACT_CONTRAST_FACTOR + pivot, 0, 255,
-    )).astype(np.uint8)
-    return enhanced, {
-        "policy": "side_gain_then_sole_mean_luminance_rgb_contrast_v1",
+    model_input = np.full(source.shape, 255, dtype=np.uint8)
+    model_input[sole] = source[sole]
+    return model_input, {
+        "policy": "original_rgb_outside_sole_white_v2",
         "source": "original_upload_rotated_crop",
         "side": side,
-        "brightness_gain": gain,
-        "contrast_factor": CONTACT_CONTRAST_FACTOR,
-        "contrast_pivot": pivot,
+        "brightness_gain": 1.0,
+        "contrast_factor": 1.0,
         "outside_sole_rgb": [255, 255, 255],
         "any_channel_255_ratio_in_sole": float(
-            np.any(enhanced[sole] == 255, axis=1).mean()
+            np.any(model_input[sole] == 255, axis=1).mean()
         ),
     }
 
@@ -1645,8 +1633,7 @@ class LocalPlantarFullSamAnalyzer:
             orientation.source_alpha[cy1:cy2, cx1:cx2]
         )
         model_sole = np.ascontiguousarray(np.asarray(roi.crop_mask) > 0)
-        # Detector brightness may be a fallback. Reconstruct the same crop
-        # from the decoded original so contact gain never compounds with it.
+        # Reconstruct the model crop directly from the decoded original.
         rotated_original = _rotate_quarter_turn_clockwise(
             image_rgb, prepared_input.rotation_degrees_clockwise,
         )
@@ -1681,29 +1668,10 @@ class LocalPlantarFullSamAnalyzer:
                 "Detector-only canvas preparation unexpectedly produced contact pixels."
             )
 
-        # Render the contact report over the exact gain/contrast input seen by
-        # SegFormer. Restore its source-space crop before applying the display
-        # crop, since detector padding can differ from visualization padding.
-        # The clean image above remains the independent pathology input.
-        model_source_rgb = np.full(rotated_original.shape, 255, dtype=np.uint8)
-        model_source_rgb[my1:my2, mx1:mx2] = contact_model_input
-        model_display_rgb = _rotate_quarter_turn_clockwise(
-            model_source_rgb, int(round(orientation.rotation_degrees)) % 360,
-        )[cy1:cy2, cx1:cx2]
-        contact_display_rgba, display_sole, display_contact, _ = _fit_to_canvas(
-            model_display_rgb,
-            contact_sole,
-            np.zeros_like(contact_sole, dtype=bool),
-            contact_alpha,
-        )
-        if (
-            not np.array_equal(display_sole, sole_canvas)
-            or not np.array_equal(contact_display_rgba[..., 3], clean_rgba[..., 3])
-            or bool(np.any(display_contact))
-        ):
-            raise PlantarFullSamAnalysisError(
-                "Contact model visualization changed the original sole or alpha geometry."
-            )
+        # Use the photographed sole directly for the report background.
+        # Model-only background whitening must not bleed into its edge colors
+        # when the image is resized for display.
+        contact_display_rgba = clean_rgba.copy()
 
         audit_base = {
             "contact_preprocessing": contact_preprocessing,
@@ -1932,7 +1900,7 @@ class LocalPlantarFullSamAnalyzer:
                 ),
                 "slidingWindowUsed": False,
                 "preprocessing": (
-                    "side_gain_then_sole_mean_luminance_rgb_contrast_outside_yolo_white_imagenet"
+                    "original_rgb_outside_yolo_white_imagenet"
                 ),
                 "contactPreprocessing": prepared.audit_base.get("contact_preprocessing", {}),
                 "tta": {
@@ -2059,7 +2027,7 @@ class LocalPlantarFullSamAnalyzer:
         display_base = prepared.contact_display_rgba
         if not isinstance(display_base, np.ndarray):
             raise PlantarFullSamAnalysisError(
-                "Preprocessed contact display is required for the plantar visualization."
+                "Original contact display is required for the plantar visualization."
             )
         if (
             display_base.dtype != np.uint8
@@ -2190,7 +2158,7 @@ class LocalPlantarFullSamAnalyzer:
                 "sole_mask_path": str(sole_mask_path),
                 "media_type": "image/png",
                 "color_mode": "RGBA",
-                "visualization_base": "preprocessed_contact_model_input",
+                "visualization_base": "original_upload_sole",
                 "alpha_semantics": (
                     "canonical_yolo_complete_sole_silhouette_with_inward_feather"
                 ),

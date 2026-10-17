@@ -872,26 +872,25 @@ class PlantarSegFormerContactProductionTests(unittest.TestCase):
 
 
 class PreparedPlantarHandoffTests(unittest.TestCase):
-    def test_cached_roi_preserves_corrected_pixels_and_rotates_source_alpha_once(self) -> None:
+    def test_cached_roi_preserves_original_pixels_and_rotates_source_alpha_once(self) -> None:
         analyzer = PlantarSegFormerContactProductionTests._analyzer()
         upright, sole, alpha = _synthetic_sole()
         alpha[20:30, 30:40] = 128
         original_rgb = cv2.rotate(upright, cv2.ROTATE_90_COUNTERCLOCKWISE)
         original_alpha = cv2.rotate(alpha, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        corrected = np.clip(upright.astype(np.float32) * 1.5, 0, 255).astype(np.uint8)
         bbox = (0, 0, upright.shape[1], upright.shape[0])
         roi = service.FootRoiResult(
             found=True, mask=sole.astype(np.uint8), bbox=bbox,
-            crop_image=corrected, crop_mask=sole.astype(np.uint8),
+            crop_image=upright, crop_mask=sole.astype(np.uint8),
             confidence=0.95, instance_count=1,
-            cardinal_view_image=corrected, cardinal_view_mask=sole.astype(np.uint8),
-            cardinal_bbox=bbox, cardinal_crop_image=corrected,
+            cardinal_view_image=upright, cardinal_view_mask=sole.astype(np.uint8),
+            cardinal_bbox=bbox, cardinal_crop_image=upright,
             cardinal_crop_mask=sole.astype(np.uint8),
         )
         original_bytes = b"original-upload"
         cached = service.PreparedPlantarFootInput(
-            image_rgb=corrected, roi=roi,
-            rotation_degrees_clockwise=90, brightness_gain=1.5,
+            image_rgb=upright, roi=roi,
+            rotation_degrees_clockwise=90, brightness_gain=1.0,
             audit={"source_sha256": service._sha256_bytes(original_bytes)},
         )
         with (
@@ -905,7 +904,7 @@ class PreparedPlantarHandoffTests(unittest.TestCase):
             ),
             patch.object(
                 service, "prepare_plantar_foot_input",
-                side_effect=AssertionError("accepted pixels must not be enhanced again"),
+                side_effect=AssertionError("accepted original pixels must be reused"),
             ),
             patch.object(
                 service, "_canonical_cardinal_crop",
@@ -915,15 +914,14 @@ class PreparedPlantarHandoffTests(unittest.TestCase):
             patch.object(service.settings, "plantar_canvas_height", 256),
         ):
             prepared = analyzer._prepare_canvas(
-                original_bytes, "left", prepared_input=cached,
+                original_bytes, "right", prepared_input=cached,
             )
         self.assertIs(canonical.call_args.args[0], roi)
         np.testing.assert_array_equal(canonical.call_args.args[1], alpha)
-        gained = upright.copy()
-        pivot = np.mean(gained[sole].astype(np.float32) @ np.array([.299, .587, .114], dtype=np.float32))
-        expected = np.rint(np.clip((gained[sole].astype(np.float32) - pivot) * 1.4 + pivot, 0, 255)).astype(np.uint8)
-        np.testing.assert_array_equal(prepared.contact_model_input_rgb[sole], expected)
+        np.testing.assert_array_equal(prepared.contact_model_input_rgb[sole], upright[sole])
+        np.testing.assert_array_equal(prepared.contact_display_rgba, prepared.clean_rgba)
         self.assertEqual(prepared.audit_base["contact_preprocessing"]["brightness_gain"], 1.0)
+        self.assertEqual(prepared.audit_base["contact_preprocessing"]["contrast_factor"], 1.0)
         self.assertEqual(prepared.audit_base["contact_preprocessing"]["source"], "original_upload_rotated_crop")
         self.assertTrue(np.all(prepared.contact_model_input_rgb[~sole] == 255))
         self.assertEqual(prepared.contact_source_shape, upright.shape[:2])

@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from io import BytesIO
+import logging
 import os
 from pathlib import Path
 import re
 import threading
+from time import perf_counter
 
 import cv2
 import numpy as np
@@ -29,6 +31,8 @@ os.environ.setdefault("MPLCONFIGDIR", str(PROJECT_ROOT / ".cache" / "matplotlib"
 (PROJECT_ROOT / ".cache" / "matplotlib").mkdir(parents=True, exist_ok=True)
 
 from ultralytics import YOLO  # noqa: E402
+
+progress_logger = logging.getLogger("uvicorn.error")
 
 PHOTO_FUNGAL_COLOR = (255, 0, 0)  # BGR blue
 PHOTO_INFLAMMATION_COLOR = (0, 0, 255)  # BGR red
@@ -1557,8 +1561,14 @@ def analyze_foot_image(
 ) -> TineaAnalysisResult:
     if str(foot_surface).strip().lower() != "dorsal":
         raise AnalysisError("Plantar skin assessment is disabled; use dorsal photographs.")
+    side_label = {"left": "왼발", "right": "오른발"}.get(foot_side, "발")
+    started_at = perf_counter()
+    progress_logger.info(
+        "[사진 분석][%s] 사진 입력을 받았습니다. 무좀·피부 상태 분석을 시작합니다.",
+        side_label,
+    )
     analyzer = get_tinea_analyzer()
-    return analyzer.analyze(
+    result = analyzer.analyze(
         image_bytes,
         filename,
         foot_side,
@@ -1566,3 +1576,9 @@ def analyze_foot_image(
         foot_surface=foot_surface,
         foot_mask_source=foot_mask_source,
     )
+    progress_logger.info(
+        "[사진 분석][%s] 무좀·피부 상태 분석을 완료했습니다. | elapsedSeconds=%.2f",
+        side_label,
+        perf_counter() - started_at,
+    )
+    return result

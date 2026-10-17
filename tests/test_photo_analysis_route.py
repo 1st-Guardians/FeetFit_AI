@@ -1643,10 +1643,10 @@ class PhotoAnalysisRouteTests(unittest.TestCase):
 
     def test_preflight_prepared_inputs_reach_contact_and_wound_with_raw_bytes_preserved(self) -> None:
         left_prepared = SimpleNamespace(
-            rotation_degrees_clockwise=90, brightness_gain=1.5
+            rotation_degrees_clockwise=90, brightness_gain=1.0
         )
         right_prepared = SimpleNamespace(
-            rotation_degrees_clockwise=90, brightness_gain=2.0
+            rotation_degrees_clockwise=90, brightness_gain=1.0
         )
         preflight = preflight_service.PhotoCapturePreflightResult(
             dorsal_width=1280,
@@ -1710,9 +1710,9 @@ class PhotoAnalysisRouteTests(unittest.TestCase):
             if entry["event"] == "capture_preflight_passed"
         )["details"]
         self.assertEqual(preflight_progress["leftPlantarRotationDegreesClockwise"], 90)
-        self.assertEqual(preflight_progress["leftPlantarBrightnessGain"], 1.5)
+        self.assertEqual(preflight_progress["leftPlantarBrightnessGain"], 1.0)
         self.assertEqual(preflight_progress["rightPlantarRotationDegreesClockwise"], 90)
-        self.assertEqual(preflight_progress["rightPlantarBrightnessGain"], 2.0)
+        self.assertEqual(preflight_progress["rightPlantarBrightnessGain"], 1.0)
         original_dorsal_analyze.assert_not_called()
         self.assertEqual(
             plantar_analyze.call_args_list,

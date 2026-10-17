@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import threading
+from time import perf_counter
 
 import cv2
 import numpy as np
@@ -21,6 +23,9 @@ from app.services.tinea_analysis import (
     predict_foot_mask,
     validate_precomputed_foot_mask,
 )
+
+
+progress_logger = logging.getLogger("uvicorn.error")
 
 
 @dataclass(frozen=True)
@@ -287,10 +292,22 @@ def analyze_hallux_valgus_image(
 ) -> HalluxValgusAnalysisResult:
     if foot_side not in {"left", "right"}:
         raise AnalysisError(f"Unsupported foot side: {foot_side}")
+    side_label = "왼발" if foot_side == "left" else "오른발"
+    started_at = perf_counter()
+    progress_logger.info(
+        "[사진 분석][%s] 사진 입력을 받았습니다. 무지외반 분석을 시작합니다.",
+        side_label,
+    )
     analyzer = get_hallux_valgus_analyzer()
-    return analyzer.analyze(
+    result = analyzer.analyze(
         image_bytes,
         filename,
         foot_side,
         foot_mask=foot_mask,
     )
+    progress_logger.info(
+        "[사진 분석][%s] 무지외반 분석을 완료했습니다. | elapsedSeconds=%.2f",
+        side_label,
+        perf_counter() - started_at,
+    )
+    return result

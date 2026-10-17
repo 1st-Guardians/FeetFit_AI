@@ -14,20 +14,18 @@ from tests.test_plantar_full_sam_analysis import _prepared_canvas
 
 
 class PlantarContactIntersectionTests(unittest.TestCase):
-    def test_gain_then_contrast_uses_only_sole_and_keeps_source_unchanged(self):
-        image = np.repeat(np.array([[40, 80, 130, 200]], dtype=np.uint8)[..., None], 3, axis=2)
+    def test_both_feet_preserve_original_sole_rgb_and_keep_source_unchanged(self):
+        image = np.array([[[0, 40, 80], [130, 170, 255], [255, 0, 200], [60, 90, 120]]], dtype=np.uint8)
         original = image.copy()
         sole = np.array([[True, True, True, False]])
-        for side, expected, gain in (
-            ("left", [23, 79, 149, 255], 1.0),
-            ("right", [46, 158, 255, 255], 2.0),
-        ):
+        for side in ("left", "right"):
             with self.subTest(side=side):
                 actual, audit = service._prepare_contact_model_input(image, sole, side)
-                np.testing.assert_array_equal(actual[0, :, 0], expected)
+                np.testing.assert_array_equal(actual[sole], original[sole])
                 self.assertTrue(np.all(actual[~sole] == 255))
-                self.assertEqual(audit["brightness_gain"], gain)
-                self.assertEqual(audit["contrast_factor"], 1.4)
+                self.assertEqual(audit["brightness_gain"], 1.0)
+                self.assertEqual(audit["contrast_factor"], 1.0)
+                self.assertFalse(np.shares_memory(actual, image))
                 np.testing.assert_array_equal(image, original)
 
     def test_restored_flip_intersection_precedes_noninteger_display_resize(self):
