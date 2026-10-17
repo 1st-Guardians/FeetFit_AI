@@ -15,7 +15,8 @@ class ShoeRecommendationReasonPayload(BaseModel):
     reason_type: ReasonType = Field(alias="reasonType")
     title: str
     risk_level: RiskLevel = Field(alias="riskLevel")
-    # 1차 저장에서는 null이 "Ollama 설명 생성 대기"를 뜻한다.
+    # 신규 추천 배치는 개인화 문장을 즉시 채운다. null은 과거 클라이언트와의
+    # 역호환 및 부분 실패 데이터 수용을 위해서만 허용한다.
     review_summary: str | None = Field(default=None, alias="reviewSummary")
     review_ids: list[int] = Field(alias="reviewIds", max_length=3)
 
@@ -33,7 +34,8 @@ class ShoeRecommendationItemPayload(BaseModel):
 
     shoe_id: int = Field(alias="shoeId", ge=1)
     fit_score: float = Field(alias="fitScore", ge=0, le=100)
-    # 1차 저장에서는 null이 "Ollama 설명 생성 대기"를 뜻한다.
+    # BGE-M3 선별 리뷰에서 안전한 근거를 찾으면 첫 상세 조회용 결정적
+    # pointSummary를 저장한다. null은 분류 가능한 상품 근거가 없다는 뜻이다.
     point_summary: str | None = Field(default=None, alias="pointSummary")
     reasons: list[ShoeRecommendationReasonPayload] = Field(min_length=3, max_length=3)
 
@@ -68,6 +70,24 @@ class ShoeSummaryTriggerRequest(BaseModel):
 
     shoe_id: int = Field(alias="shoeId", ge=1)
     measurement_session_id: int = Field(alias="measurementSessionId", ge=1)
+    wait_for_immediate: bool = Field(default=False, alias="waitForImmediate")
+
+
+class ShoeSummaryGenerateRequest(BaseModel):
+    """Server가 상세 응답 안에서 자연어 요약을 동기 생성할 때 쓰는 요청."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    shoe_id: int = Field(alias="shoeId", ge=1)
+    measurement_session_id: int = Field(alias="measurementSessionId", ge=1)
+
+
+class ShoeSummaryTriggerResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    accepted: bool
+    deduplicated: bool
+    immediate_saved: bool | None = Field(default=None, alias="immediateSaved")
 
 
 class ShoeSummaryReasonPayload(BaseModel):

@@ -24,6 +24,19 @@ logger = logging.getLogger(__name__)
 _CACHE_FORMAT = "feetfit-shoe-review-embedding-v2"
 
 
+def _load_model(device: str):
+    from sentence_transformers import SentenceTransformer
+
+    # BGE-M3 is provisioned in the local Hugging Face cache.  Explicit offline
+    # loading prevents an optional adapter-config HEAD request from turning a
+    # healthy cached model into a batch failure when outbound access is blocked.
+    return SentenceTransformer(
+        settings.shoe_embedding_model_name,
+        device=device,
+        local_files_only=settings.shoe_embedding_local_files_only,
+    )
+
+
 def resolve_device(device_arg: str) -> str:
     if device_arg == "auto":
         return "cuda" if torch.cuda.is_available() else "cpu"
@@ -51,13 +64,9 @@ def get_model():
     if _model is None:
         with _model_lock:
             if _model is None:
-                from sentence_transformers import SentenceTransformer
-
                 device = resolve_device(settings.shoe_embedding_device)
                 try:
-                    _model = SentenceTransformer(
-                        settings.shoe_embedding_model_name, device=device
-                    )
+                    _model = _load_model(device)
                     _model_device = device
                 except Exception:
                     if device != "cuda":
@@ -67,9 +76,7 @@ def get_model():
                         exc_info=True,
                     )
                     torch.cuda.empty_cache()
-                    _model = SentenceTransformer(
-                        settings.shoe_embedding_model_name, device="cpu"
-                    )
+                    _model = _load_model("cpu")
                     _model_device = "cpu"
                 logger.info(
                     "BGE-M3 initialized: device=%s model=%s",
@@ -164,13 +171,9 @@ def embed_texts(texts: list[str]) -> np.ndarray:
             exc_info=True,
         )
         with _model_lock:
-            from sentence_transformers import SentenceTransformer
-
             _model = None
             torch.cuda.empty_cache()
-            _model = SentenceTransformer(
-                settings.shoe_embedding_model_name, device="cpu"
-            )
+            _model = _load_model("cpu")
             _model_device = "cpu"
             model = _model
         vectors = model.encode(

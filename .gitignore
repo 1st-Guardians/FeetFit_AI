@@ -17,11 +17,19 @@ venv/
 .env.*
 !.env.example
 
+# Credentials and private keys must never be committed.
+*.pem
+*.ppk
+*.key
+*.p12
+*.pfx
+
 weights/
 models/
 *.pt
 *.pth
 *.onnx
+*.npz
 
 storage/uploads/
 storage/generated/
@@ -29,3 +37,16 @@ storage/debug_*
 
 # Local execution/audit reports can contain user, session, device, and DB metadata.
 artifacts/
+
+# Local databases, coverage, packaging, and OS metadata.
+*.db
+*.sqlite
+*.sqlite3
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+.DS_Store
+Thumbs.db

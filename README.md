@@ -46,15 +46,58 @@ configuration and security live in `core`, request/response contracts live in
 ## Run
 
 ```powershell
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+py -3.11 -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+.\venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+Using the virtual environment's Python directly works in both PowerShell and
+`cmd.exe`; shell activation is optional.
 
 Swagger:
 
 ```text
 http://localhost:8000/docs
 ```
+
+Health check:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health
+```
+
+### Local model assets
+
+Model weights, generated images, embedding caches, local audit artifacts, and
+`.env` are intentionally excluded from Git. Copy the required weights into the
+local `weights/` directory or configure their paths in `.env`; do not commit
+them to GitHub. Start from `.env.example`, whose values are placeholders.
+
+### Tests
+
+```powershell
+.\venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\venv\Scripts\python.exe -m pytest -q
+```
+
+### ngrok development tunnel
+
+Install the ngrok CLI and configure its token outside this repository once:
+
+```powershell
+ngrok config add-authtoken <YOUR_NGROK_TOKEN>
+```
+
+Then start FastAPI and ngrok together:
+
+```powershell
+.\venv\Scripts\python.exe scripts\run_ngrok.py
+```
+
+The script reuses an existing service on port 8000 or starts one with the same
+virtual-environment interpreter. Private keys, ngrok credentials, and `.env`
+must remain local.
 
 Click `Authorize` in Swagger and paste the JWT Bearer token before calling any
 endpoint below (all of them forward the same token to Feetfit_Server).
@@ -94,7 +137,7 @@ hallux valgus landmark inference keeps the original image preprocessing.
 Then it forwards the multipart request to:
 
 ```text
-http://35.94.253.151/api/reports/tina-pedis
+http://127.0.0.1:8080/api/reports/tina-pedis
 ```
 
 The tinea description fields and hallux `scoreAnalysisText` are generated with
@@ -105,9 +148,9 @@ summary text and still forwards the report request.
 Model weights must be placed here:
 
 ```text
-D:/Feetfit_AI/weights/foot_seg_yolo11n_best.pt
-D:/Feetfit_AI/weights/tinea_pedis_best.pt
-D:/Feetfit_AI/weights/sam_vit_b_01ec64.pth
+<project>/weights/foot_seg_yolo11n_best.pt
+<project>/weights/tinea_pedis_best.pt
+<project>/weights/sam_vit_b_01ec64.pth
 ```
 
 The shoe-recommendation endpoints additionally require:
@@ -177,7 +220,7 @@ their own foot-boundary YOLO inference on this endpoint.
 
 The validated ArUco implementation and camera calibration are loaded from the
 separately cloned repository configured by `ARUCO_SOURCE_DIR` (default:
-`D:/ArUco-marker-code`). Keep that clone at the matching validated revision and
+`../ArUco-marker-code`, configurable through `ARUCO_SOURCE_DIR`). Keep that clone at the matching validated revision and
 make sure its `models/hybrid_best_1280x720.npz` file exists.
 
 ```bash
@@ -307,9 +350,15 @@ The numerical policy and semantic threshold are explicitly
 pressure/humidity thresholds are environment-backed settings rather than clinical
 claims. The shoe comparison feature is intentionally out of scope.
 
-**No LLM call happens here.** The first-stage save explicitly sends
-`pointSummary: null` and `reviewSummary: null`; null means summary generation is
-pending. The result is forwarded to `FEETFIT_SERVER_RECOMMENDATION_ENDPOINT`.
+**No LLM call happens here.** The batch deterministically renders an
+evidence-backed `pointSummary` from the shoe's independent MUSINSA review
+consensus. When reviews cannot support product copy, it uses only the calculated
+user/product compatibility as a non-null fallback and never invents styling or
+sizing facts. It also creates all three per-area `reviewSummary` values from the
+same session's pressure, dimensions, foot environment, compatibility components,
+and repeated review evidence. The complete result is forwarded to
+`FEETFIT_SERVER_RECOMMENDATION_ENDPOINT`, so a normal detail request is a single
+database read and does not wait for Ollama.
 
 ```bash
 curl -X POST "http://localhost:8000/api/reports/shoe-recommendations" \
@@ -319,29 +368,76 @@ curl -X POST "http://localhost:8000/api/reports/shoe-recommendations" \
   -d '{"measurementSessionId": 30}'
 ```
 
-### `POST /api/shoes/summaries`
+### `POST /api/shoes/summaries/generate`
 
 ```json
 { "shoeId": 220, "measurementSessionId": 30 }
 ```
 
-Must be called by Feetfit_Server (fire-and-forget) when a shoe detail view finds
-`pointSummary == null`; this AI endpoint cannot initiate that hook itself. It
-returns `202` immediately and generation happens in a background task:
+이전 배치에서 요약이 비어 있는 데이터만 보완하기 위한 호환 API입니다. 신규
+추천 배치는 이미 완성된 요약 네 개를 함께 저장하므로 정상 흐름의 상세 조회에서는
+이 API를 호출하지 않습니다. 호출되는 경우 저장된 동일 측정 세션의 추천 근거와
+신발 특성을 읽고 Server의 기존 요약 저장 DTO와 같은 형태를 반환합니다.
+
+```json
+{
+  "measurementSessionId": 30,
+  "pointSummary": "이 신발의 주요 착화 특성을 자연스럽게 정리한 문장입니다.",
+  "reasons": [
+    {"reasonType": "FOREFOOT", "reviewSummary": "발볼 요약", "reviewIds": [1]},
+    {"reasonType": "HEEL", "reviewSummary": "뒤꿈치 요약", "reviewIds": [2]},
+    {"reasonType": "INSOLE", "reviewSummary": "깔창 요약", "reviewIds": [3]}
+  ]
+}
+```
+
+이 경로는 Feetfit_Server 저장 callback을 호출하지 않습니다. Server가 응답의
+`measurementSessionId`와 세 reason 계약을 검증해 직접 저장한 뒤 같은 상세 응답에
+반영합니다. 같은 세션/신발의 동시 요청은 하나의 Ollama 결과를 공유합니다.
+Ollama 전송 실패·혼잡 또는 `OLLAMA_DIRECT_SUMMARY_DEADLINE_SECONDS` 초과 시에는
+동일 근거로 만든 non-null 결정론적 문장을 HTTP `200`으로 반환합니다.
+
+```bash
+curl -X POST "http://localhost:8000/api/shoes/summaries/generate" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "X-Internal-Api-Key: <FEETFIT_SERVER_INTERNAL_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"shoeId":220,"measurementSessionId":30}'
+```
+
+### `POST /api/shoes/summaries` (legacy async trigger)
+
+```json
+{ "shoeId": 220, "measurementSessionId": 30, "waitForImmediate": true }
+```
+
+Must be called by Feetfit_Server when a shoe detail view finds an absent
+`pointSummary` or per-area `reviewSummary`; this AI endpoint cannot initiate that
+hook itself. `waitForImmediate` defaults to `false`, preserving the original
+fire-and-forget `202` contract. When it is `true`, the request waits at most four
+seconds for steps 1-2 to complete in Feetfit_Server and returns
+`202 {"accepted":true,"deduplicated":false,"immediateSaved":true}`. Ollama
+refinement still runs after the response as a background task:
 
 1. Read the **already-computed** fitScore/riskLevel/title and evidence review
    texts from Feetfit_Server's JWT-scoped summary-context endpoint. Nothing is
    recalculated (no embeddings and no foot-state lookup). The exact completed
    `measurementSessionId` is required; no current/older-session fallback is used.
-2. Call Ollama once (`OLLAMA_MODEL`, temperature `OLLAMA_TEMPERATURE`) to
-   semantically remove unrelated BGE candidates (the returned IDs must be a unique
-   subset of the exact shoe/reason candidates, maximum three), and turn the facts
-   into Korean `pointSummary` + `forefootSummary`/`heelSummary`/`insoleSummary`.
-   The prompt explicitly forbids inventing review content for
-   body parts with zero evidence reviews, forbids medical-diagnosis language,
-   and must not contradict the given riskLevel. Response is parsed as JSON with
-   a regex-extraction fallback if the model wraps it in prose/markdown.
-3. `POST` the generated summary to `{shoe_id}/summaries` on Feetfit_Server
+2. Persist a deterministic typed-evidence summary immediately. This gives old
+   pending rows and per-area summaries a safe provisional value before GPU
+   generation completes; it never changes fitScore/riskLevel.
+3. Call Ollama (`OLLAMA_MODEL`, temperature `OLLAMA_TEMPERATURE`) with the exact
+   Pydantic JSON Schema to semantically remove unrelated BGE candidates (the
+   returned IDs must be a unique subset of the exact shoe/reason candidates,
+   maximum three), and turn the facts into Korean `pointSummary` +
+   `forefootSummary`/`heelSummary`/`insoleSummary`. A schema-invalid response gets
+   one correction attempt using the original grounded prompt; a second contract
+   failure uses the deterministic typed-evidence fallback. The prompt explicitly
+   forbids inventing review content for body parts with zero evidence reviews,
+   forbids medical-diagnosis language, and must not contradict the given
+   riskLevel. Response is parsed as JSON with a regex-extraction fallback if the
+   model wraps it in prose/markdown.
+4. `POST` the refined summary to `{shoe_id}/summaries` on Feetfit_Server
    (`FEETFIT_SERVER_SUMMARY_SAVE_ENDPOINT_TEMPLATE`), forwarding the same Bearer
    token, exact measurementSessionId, summaries, and the validated final reviewIds.
 
@@ -350,23 +446,24 @@ through `FEETFIT_SERVER_CHARACTERISTICS_ENDPOINT_TEMPLATE`. The returned RunRepe
 levels remain separate from subjective review evidence (for example cushioning,
 shock absorption, and sole thickness are never treated as interchangeable).
 
-Any failure (missing Server context, Ollama error, save callback failure) is logged and
-silently dropped. Once the Server detail-view hook is installed, the next detail
-view can retry because `pointSummary` stays `null`.
+Missing Server context, unrecoverable Ollama transport errors, and save callback
+failures are logged and silently dropped. Schema-only failures use the grounded
+fallback and are still saved. Once the Server detail-view hook is installed, the
+next detail view can retry any dropped task because `pointSummary` stays `null`.
 
 ```bash
 curl -X POST "http://localhost:8000/api/shoes/summaries" \
   -H "Authorization: Bearer <TOKEN>" \
   -H "X-Internal-Api-Key: <FEETFIT_SERVER_INTERNAL_API_KEY>" \
   -H "Content-Type: application/json" \
-  -d '{"shoeId": 220, "measurementSessionId": 30}'
+  -d '{"shoeId": 220, "measurementSessionId": 30, "waitForImmediate": true}'
 ```
 
 ## `.env` reference
 
 ```text
-TINEA_REPORT_ENDPOINT=http://35.94.253.151/api/reports/tina-pedis
-HALLUX_VALGUS_REPORT_ENDPOINT=http://35.94.253.151/api/reports/hallux-valgus
+TINEA_REPORT_ENDPOINT=http://127.0.0.1:8080/api/reports/tina-pedis
+HALLUX_VALGUS_REPORT_ENDPOINT=http://127.0.0.1:8080/api/reports/hallux-valgus
 FEETFIT_SERVER_RECOMMENDATION_ENDPOINT=http://127.0.0.1:8080/api/shoes/recommendations
 FEETFIT_SERVER_SUMMARY_SAVE_ENDPOINT_TEMPLATE=http://127.0.0.1:8080/api/shoes/{shoe_id}/summaries
 FEETFIT_SERVER_RECOMMENDATION_CONTEXT_ENDPOINT=http://127.0.0.1:8080/api/internal/shoe-analysis/recommendation-context
@@ -407,7 +504,7 @@ PHOTO_CUTOUT_BACKGROUND=true
 PHOTO_CUTOUT_PADDING=28
 
 # Single-photo ArUco pipeline
-ARUCO_SOURCE_DIR=D:/ArUco-marker-code
+ARUCO_SOURCE_DIR=C:/path/to/aruco-marker-code
 ARUCO_DICTIONARY=DICT_4X4_50
 ARUCO_EXPECTED_IMAGE_WIDTH=1280
 ARUCO_EXPECTED_IMAGE_HEIGHT=720
@@ -419,6 +516,7 @@ ARUCO_IMAGE_LEFT_ANATOMICAL_SIDE=left
 
 # BGE-M3 sentence embedding (shoe-recommendations batch)
 SHOE_EMBEDDING_DEVICE=auto        # auto | cpu | cuda
+SHOE_EMBEDDING_LOCAL_FILES_ONLY=true  # use the provisioned cache; disable only for the initial download
 SHOE_MAX_CANDIDATE_REVIEWS_PER_REASON=40
 SHOE_REVIEWS_PER_REASON=3                  # 1..3 (save payload contract)
 SHOE_REVIEW_SEMANTIC_MIN_SCORE=0.42        # TEMPORARY_HEURISTIC
@@ -432,7 +530,22 @@ OLLAMA_MODEL=qwen2.5:7b-instruct
 OLLAMA_TEMPERATURE=0.0
 OLLAMA_NUM_GPU=-1                 # GPU preferred; 0 forces CPU
 OLLAMA_CPU_FALLBACK_ENABLED=true
+OLLAMA_DIRECT_SUMMARY_DEADLINE_SECONDS=8.5
+OLLAMA_KEEP_ALIVE=30m
+OLLAMA_PREWARM_ON_STARTUP=false
 ```
+
+`OLLAMA_KEEP_ALIVE`는 한 번 로드된 모델을 상세 탐색 중 상주시켜 warm 요청을 보통
+수 초 안에 처리하도록 합니다. 재시작 직후부터 자연어 결과가 필요하면
+`OLLAMA_PREWARM_ON_STARTUP=true`로 설정할 수 있지만, startup이 모델 로드를 마칠
+때까지 길어질 수 있습니다. 특히 8 GB GPU에서는 Qwen 7B와 BGE-M3 추천 배치를
+동시에 상주시킬 경우 VRAM 부족 가능성이 있으므로 추천 배치 실행 시점을 분리하거나
+prewarm을 끄세요. Ollama 장애 시에도 direct API는 검증된 non-null fallback을
+반환하지만 그 응답이 Ollama 문체라고 보장되지는 않습니다.
+
+`SHOE_EMBEDDING_LOCAL_FILES_ONLY=true`는 이미 내려받은 BGE-M3 캐시를 사용하며
+요청 중 Hugging Face 네트워크 확인을 하지 않습니다. 모델을 처음 내려받는 환경에서만
+외부 통신이 가능한 상태로 `false`를 사용한 뒤, 운영 요청에서는 다시 `true`로 두세요.
 
 All `FEETFIT_SERVER_*_ENDPOINT*` values must be set to the intended deployment
 environment. Defaults are loopback-only and never point at a public Server. The

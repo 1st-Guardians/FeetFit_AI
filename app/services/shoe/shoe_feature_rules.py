@@ -36,9 +36,27 @@ def split_sentences(text: str) -> list[str]:
 
 
 _KEYWORDS_BY_REASON: dict[str, list[str]] = {
-    "FOREFOOT": ["발볼", "앞볼", "앞꿈치", "앞코", "엄지", "발가락", "폭이", "볼이"],
-    "HEEL": ["뒤꿈치", "뒷굽", "힐", "까짐", "까졌", "미끄러", "헐렁", "뒤축", "발목"],
-    "INSOLE": ["깔창", "쿠션", "푹신", "딱딱", "통풍", "통기성", "바닥", "발바닥"],
+    "FOREFOOT": [
+        "발볼", "앞볼", "앞꿈치", "앞코", "엄지", "발가락", "폭이", "볼이",
+        "사이즈", "정사이즈", "반업",
+    ],
+    "HEEL": [
+        "뒤꿈치", "뒷굽", "힐", "까짐", "까졌", "미끄러", "헐렁", "뒤축", "발목",
+        "쿠션", "푹신", "폭신", "딱딱", "충격", "반발", "바닥", "밑창", "미드솔",
+        "장시간", "오래", "피로", "안정감", "착화감",
+    ],
+    "INSOLE": [
+        "깔창",
+        "통풍",
+        "통기성",
+        "열감",
+        "습기",
+        "땀",
+        "답답",
+        "쾌적",
+        "인솔",
+        "신발 내부",
+    ],
 }
 
 _NON_FIT_TOPIC_KEYWORDS = (
@@ -50,6 +68,15 @@ _NON_FIT_TOPIC_KEYWORDS = (
     "예쁘",
     "이뻐",
     "디자인",
+    "실루엣",
+    "쉐입",
+    "날렵",
+    "둥글",
+    "로우",
+    "전체 핏",
+    "착화 핏",
+    "전체적",
+    "딱 맞",
     "색상",
     "가슴",
     "허리",
@@ -67,7 +94,10 @@ _EVIDENCE_CLAUSE_SPLIT_PATTERN = re.compile(
     + r"))"
 )
 _POINT_CLAUSE_SPLIT_PATTERN = re.compile(
-    r"(?<=[.!?])\s+|(?<=[다요])\s+|\n+|[;]+"
+    # Do not split merely because a token ends in 다/요.  Adverbs such as
+    # `생각보다 편하고` otherwise become the two fragments `생각보다` and
+    # `편하고`, destroying the actual wear evidence.
+    r"(?<=[.!?])\s+|\n+|[;]+"
 )
 
 _POINT_SUMMARY_KEYWORDS = tuple(
@@ -83,10 +113,21 @@ _POINT_SUMMARY_KEYWORDS = tuple(
     "1업",
     "사이즈 업",
     "사이즈 다운",
+    "mm",
+    "cm",
+    "미리",
+    "밀리미터",
+    "센티",
+    "센티미터",
     "착화감",
+    "편하",
+    "편해",
+    "편안",
     "무게",
     "가볍",
+    "가벼",
     "무겁",
+    "무거",
     "굽",
     "소재",
     "부드럽",
@@ -94,11 +135,25 @@ _POINT_SUMMARY_KEYWORDS = tuple(
     "색상",
     "디자인",
     "실루엣",
+    "쉐입",
+    "날렵",
+    "둥글",
+    "로우",
+    "전체 핏",
+    "착화 핏",
+    "전체적",
+    "딱 맞",
     "예뻐",
     "예쁘",
     "이뻐",
     "데일리",
     "코디",
+    "여기저기",
+    "어디에",
+    "어디든",
+    "다양한 스타일",
+    "잘 어울",
+    "어울리",
     "청바지",
     "데님",
     "슬랙스",
@@ -133,6 +188,68 @@ POINT_EVIDENCE_CATEGORIES = (
     "OTHER",
 )
 
+_POINT_SUBJECT_MARKERS: dict[str, tuple[str, ...]] = {
+    "SIZE": (
+        "한 사이즈 업",
+        "반 사이즈 업",
+        "반업",
+        "1업",
+        "정사이즈",
+        "사이즈",
+        "전체 핏",
+        "착화 핏",
+        "전체적",
+    ),
+    "WIDTH": ("발볼", "앞볼", "발등", "발볼러"),
+    "TOEBOX": ("앞코", "발가락"),
+    "HEEL": ("뒤꿈치", "뒷꿈치", "뒤축", "발목"),
+    "CUSHION": ("쿠션", "깔창"),
+    "SOLE": ("바닥", "밑창", "아웃솔", "깔창"),
+    "LONG_WEAR": ("하루종일", "장시간", "종일", "오래"),
+    "WEIGHT": ("착화 시", "신발 무게", "제품 무게", "무게", "무게감"),
+    "WEAR": ("착화감",),
+    "BREATHABILITY": (
+        "통풍",
+        "통기",
+        "열감",
+        "습기",
+        "땀",
+        "쾌적",
+    ),
+    "APPEARANCE": (
+        "디자인",
+        "색감",
+        "색상",
+        "외관",
+        "실루엣",
+        "쉐입",
+        "날렵",
+        "로우 프로파일",
+        "낮은 실루엣",
+    ),
+    "STYLING": (
+        "청바지",
+        "데님",
+        "슬랙스",
+        "스커트",
+        "치마",
+        "통큰 바지",
+        "와이드 팬츠",
+        "데일리",
+        "일상용",
+        "코디",
+        "매치",
+        "여기저기",
+        "어디에나",
+        "어디에",
+        "어디든",
+        "다양한 스타일",
+        "다양한 코디",
+        "잘 어울",
+        "어울리",
+    ),
+}
+
 
 @dataclass(frozen=True, order=True)
 class PointSignal:
@@ -151,7 +268,14 @@ _SIZE_OPTION_TOKEN_PATTERN = re.compile(
     r"|(?P<HALF_UP>반\s*(?:사이즈\s*)?업)"
     r"|(?P<TRUE_SIZE>정\s*\d*\s*사이즈)"
     r"|(?P<DOWN>사이즈\s*다운|사이즈다운)"
-    r"|(?P<GENERIC_UP>사이즈\s*업|사이즈업)"
+    # `10 업`, `업해서`, `업하세요` are common MUSINSA wording.  Keep
+    # numeric increments generic: 10 mm must never be silently rewritten as
+    # either a half-size or a full-size recommendation.
+    r"|(?P<GENERIC_UP>"
+    r"(?:사이즈\s*업|사이즈업)"
+    r"|(?<![가-힣A-Za-z0-9반])(?:\d+\s*(?:mm|미리)?\s*(?:정도\s*)?)?"
+    r"업(?:해서|하니|하면|해야|하세(?:요|욤)?|하세요|했(?:더니)?|해|을|이|으로)?"
+    r")"
 )
 _SIZE_OPTION_GROUP_CONNECTOR_PATTERN = re.compile(
     r"\s*(?:나|이나|또는|혹은|/|,|및|와|과)\s*"
@@ -171,21 +295,32 @@ _SIZE_NEGATIVE_TERMS = (
 _SIZE_POSITIVE_TERMS = (
     "편하",
     "편해",
+    "편합",
     "편했",
     "편안",
     "적당",
     "잘 맞",
+    "딱 맞",
     "좋",
     "여유",
 )
-_SIZE_SELECTION_PATTERN = re.compile(r"(?:갔|했|선택|신었|신어|골랐|고른)")
+_SIZE_RECOMMENDATION_PATTERN = re.compile(
+    r"(?:해야|추천|고려|하세|하세요|가세|가세요|사시|신으)"
+)
+_SIZE_RECOMMENDATION_REJECTION_PATTERN = re.compile(
+    r"(?:추천|고려|선택).{0,8}(?:별로|싫|좋지\s*않|권하지\s*않|안\s*하|하지\s*않)"
+)
 _WIDE_FOOT_CONTEXT_PATTERNS = (
     re.compile(r"(?:제|내)\s*발볼.{0,8}넓"),
     re.compile(r"(?:저는|제가|나는|평소)\s*발볼.{0,8}넓"),
     re.compile(
         r"발볼(?:이|은|가)?\s*(?:좀|많이|매우)?\s*넓(?:은)?\s*"
-        r"(?:사람|분|편)(?:이|이라|인데|이고|입니다|이에요|이라서)?"
+        r"(?:사람|분)(?:이|이라|인데|이고|입니다|이에요|이라서)?"
     ),
+    re.compile(r"발볼(?:이|은|가)?\s*(?:있|크)(?:는|은|면|다면|신)?"),
+    re.compile(r"발등(?:이|은|가)?\s*(?:있|높)(?:는|은|면|다면)?"),
+    re.compile(r"발볼(?:이|은|가)?\s*넓(?:으면|다면)"),
+    re.compile(r"발등(?:이|은|가)?\s*높(?:으면|다면)"),
 )
 _EXPLICIT_SHOE_WIDTH_PATTERN = re.compile(
     r"(?:이\s*신발|신발|제품|모델).{0,12}발볼"
@@ -194,10 +329,30 @@ _EXPLICIT_SHOE_WIDTH_PATTERN = re.compile(
 
 def _term_occurrence_is_negated(text: str, start: int, end: int) -> bool:
     before = text[max(0, start - 8) : start]
-    after = text[end : end + 12]
+    after = text[end : end + 24]
     return bool(
         re.search(r"(?:안|못|별로|전혀)\s*$", before)
-        or re.match(r"(?:하)?지(?:는|도)?\s*(?:않|못)", after)
+        or re.match(r"(?:하|리)?지(?:는|도)?\s*(?:않|못)", after)
+        or re.match(r"(?:감)?(?:이|은|는|가)?\s*(?:없|부족)", after)
+        or re.match(
+            r"(?:은|는|운|한)?\s*편(?:은|이)?\s*(?:아니|아닌|아닙)", after
+        )
+        or re.match(
+            r"(?:은|는|운|한)?\s*(?:것|건)?\s*(?:아니|아닌|아닙)", after
+        )
+        or re.match(r"(?:이|은|는)?\s*(?:아니|아닌|아닙)", after)
+        or re.match(
+            r".{0,28}(?:느낌|생각|편|핏|선택|대상|수준)(?:이|은|는|도)?\s*"
+            r"(?:아니|아닌|아닙|없|들지\s*(?:않|못))",
+            after,
+        )
+        or re.match(
+            r".{0,24}(?:느끼|생각하)(?:지|지는|지는)?\s*(?:않|못)",
+            after,
+        )
+        or re.match(r".{0,24}(?:라고|다고)?\s*할\s*수\s*(?:없|없는)", after)
+        or re.match(r".{0,24}(?:라고|다고|으로)?\s*보(?:기|기는)\s*어렵", after)
+        or re.match(r".{0,18}(?:이라기|라기)\s*보다", after)
     )
 
 
@@ -215,6 +370,59 @@ def _has_negated_term(text: str, terms: tuple[str, ...]) -> bool:
             if _term_occurrence_is_negated(text, match.start(), match.end()):
                 return True
     return False
+
+
+def _point_subject_contexts(text: str, subject: str) -> tuple[str, ...]:
+    """Return every local predicate span for one product attribute.
+
+    Reviews often place opposing attributes in one sentence (for example
+    `발볼은 좁지만 착화감은 좋아요`).  Using the whole sentence's sentiment
+    for every subject creates false consensus, so each subject stops at the
+    next different typed subject marker.
+    """
+
+    occurrences: set[tuple[int, str]] = set()
+    for group, markers in _POINT_SUBJECT_MARKERS.items():
+        for marker in markers:
+            for match in re.finditer(marker, text):
+                # `바닥` describes the outsole, while the same characters in
+                # `발바닥` describe a wear outcome.  Treating the latter as a
+                # new SOLE subject truncates long-wear evidence mid-word.
+                if marker == "바닥" and match.start() > 0 and text[match.start() - 1] == "발":
+                    continue
+                occurrences.add((match.start(), group))
+    ordered_occurrences = sorted(occurrences)
+    target_starts = sorted(
+        {position for position, group in ordered_occurrences if group == subject}
+    )
+    if not target_starts:
+        return ()
+    spans: list[str] = []
+    for target_start in target_starts:
+        has_previous_other_subject = any(
+            position < target_start and group != subject
+            for position, group in ordered_occurrences
+        )
+        start = target_start if has_previous_other_subject else 0
+        end = next(
+            (
+                position
+                for position, group in ordered_occurrences
+                if position > target_start and group != subject
+            ),
+            len(text),
+        )
+        span = text[start:end]
+        if span and span not in spans:
+            spans.append(span)
+    return tuple(spans)
+
+
+def _point_subject_context(text: str, subject: str) -> str:
+    # Joining all local spans lets contradictory repeated mentions emit both
+    # directions, which the aggregation layer then marks MIXED instead of
+    # manufacturing a false consensus from only the first occurrence.
+    return " ".join(_point_subject_contexts(text, subject))
 
 
 def _size_option_contexts(text: str) -> list[tuple[str, str]]:
@@ -241,16 +449,35 @@ def _size_option_contexts(text: str) -> list[tuple[str, str]]:
             if last_grouped + 1 < len(matches)
             else len(text)
         )
+        # A predicate belonging to another typed product attribute must not be
+        # borrowed as evidence that the selected size worked.  For example,
+        # ``반업했는데 디자인은 좋아요`` says nothing about half-up fit.
+        typed_subject_starts = (
+            marker_match.start()
+            for group, markers in _POINT_SUBJECT_MARKERS.items()
+            if group != "SIZE"
+            for marker in markers
+            for marker_match in re.finditer(re.escape(marker), text)
+            if match.end() <= marker_match.start() < context_end
+        )
+        context_end = min(typed_subject_starts, default=context_end)
         contexts.append((match.lastgroup or "", text[match.start() : context_end]))
     return contexts
 
 
 def _size_option_stance(option: str, context: str) -> str:
+    if _SIZE_RECOMMENDATION_REJECTION_PATTERN.search(context):
+        return "NEUTRAL"
     if _has_unnegated_term(context, _SIZE_NEGATIVE_TERMS):
         return "NEGATIVE"
     if _has_unnegated_term(context, _SIZE_POSITIVE_TERMS):
         return "POSITIVE"
-    if option != "TRUE_SIZE" and _SIZE_SELECTION_PATTERN.search(context):
+    # Merely reporting a purchase/selection (``반업했는데``) is not proof that
+    # the option fit well.  Only an explicit recommendation can establish a
+    # positive size-option signal without a local fit predicate.
+    if _SIZE_RECOMMENDATION_PATTERN.search(context) and (
+        option != "TRUE_SIZE" or "추천" in context or "가세" in context
+    ):
         return "POSITIVE"
     return "NEUTRAL"
 
@@ -260,8 +487,14 @@ def _describes_wearer_wide_foot(text: str) -> bool:
         return False
     return any(pattern.search(text) for pattern in _WIDE_FOOT_CONTEXT_PATTERNS)
 
-_POSITIVE_KEYWORDS = ["편하", "여유", "좋았", "좋아요", "좋습니다", "시원하", "부드럽", "안정적", "쾌적", "조아", "조하", "굳", "굿"]
-_NEGATIVE_KEYWORDS = ["좁아", "좁다", "아팠", "아파요", "아파", "까졌", "까짐", "딱딱하", "답답하", "불편", "미끄러"]
+_POSITIVE_KEYWORDS = [
+    "편하", "편해", "편안", "여유", "넉넉", "좋았", "좋고", "좋아요", "좋습니다",
+    "시원하", "시원", "부드럽", "안정적", "쾌적", "조아", "조하", "굳", "굿",
+]
+_NEGATIVE_KEYWORDS = [
+    "좁아", "좁다", "아팠", "아파요", "아파", "까졌", "까짐", "딱딱하", "딱딱",
+    "답답하", "답답", "불편", "미끄러", "열감", "습기", "피로", "부담",
+]
 
 
 def bucket_review_by_reason(review_text: str) -> list[str]:
@@ -352,14 +585,17 @@ def classify_point_evidence(clause: str) -> tuple[PointSignal, ...]:
     def add(category: str, subject: str, value: str, stance: str) -> None:
         signals.add(PointSignal(category, subject, value, stance))
 
-    negative = _has_unnegated_term(
-        text,
-        ("까", "아프", "아파", "불편", "좁", "작", "끼", "눌", "답답", "힘들"),
-    )
-    positive = _has_unnegated_term(
-        text,
-        ("편하", "편해", "편했", "편안", "적당", "잘 맞", "좋", "여유", "안정", "만족"),
-    )
+    width_text = _point_subject_context(text, "WIDTH")
+    toebox_text = _point_subject_context(text, "TOEBOX")
+    heel_text = _point_subject_context(text, "HEEL")
+    cushion_text = _point_subject_context(text, "CUSHION")
+    sole_text = _point_subject_context(text, "SOLE")
+    long_wear_text = _point_subject_context(text, "LONG_WEAR")
+    wear_text = _point_subject_context(text, "WEAR")
+    breathability_text = _point_subject_context(text, "BREATHABILITY")
+    appearance_text = _point_subject_context(text, "APPEARANCE")
+    styling_text = _point_subject_context(text, "STYLING")
+    size_fit_text = _point_subject_context(text, "SIZE")
 
     size_value_by_option = {
         "FULL_UP": "FULL_UP",
@@ -368,28 +604,76 @@ def classify_point_evidence(clause: str) -> tuple[PointSignal, ...]:
         "GENERIC_UP": "GENERIC_UP",
         "DOWN": "DOWN",
     }
+    generic_up_has_size_context = any(
+        marker in text
+        for marker in (
+            "사이즈",
+            "발볼",
+            "앞볼",
+            "앞코",
+            "발등",
+            "발가락",
+            "발볼러",
+            "칼발",
+        )
+    ) or bool(
+        re.search(
+            r"\d+(?:\.\d+)?\s*(?:mm|cm|미리|밀리미터|센티|센티미터)"
+            r"\s*(?:정도\s*)?(?:사이즈\s*)?업",
+            text,
+        )
+    )
     for option, context in _size_option_contexts(text):
+        if option == "GENERIC_UP" and not generic_up_has_size_context:
+            # Bare `업` is ambiguous in Korean (업무/스타일 업/etc.).  Only
+            # accept the shorthand when the same clause is explicitly about
+            # shoe sizing or foot shape.
+            continue
         add(
             "SIZE_FIT",
             "SIZE_OPTION",
             size_value_by_option[option],
             _size_option_stance(option, context),
         )
+    explicit_fit_matches = _has_unnegated_term(
+        text,
+        (
+            "핏이 잘 맞",
+            "핏은 잘 맞",
+            "핏도 잘 맞",
+        ),
+    )
+    if (
+        size_fit_text
+        and _has_unnegated_term(size_fit_text, ("딱 맞", "밀착"))
+    ) or explicit_fit_matches:
+        add("SIZE_FIT", "OVERALL_FIT", "EXACT", "POSITIVE")
 
-    width_subject = any(
-        marker in text for marker in ("발볼", "앞볼", "앞코", "발등", "발볼러", "발가락")
+    width_subject = bool(width_text)
+    toebox_subject = bool(toebox_text)
+    width_tight_space = _has_unnegated_term(
+        width_text, ("좁", "타이트", "끼", "눌", "작")
+    )
+    width_roomy_space = _has_unnegated_term(
+        width_text, ("여유", "넉넉")
+    )
+    toebox_tight_space = _has_unnegated_term(
+        toebox_text, ("좁", "타이트", "끼", "눌", "작")
+    )
+    toebox_roomy_space = _has_unnegated_term(
+        toebox_text, ("여유", "넉넉")
     )
     if width_subject:
-        wide_foot_context = _describes_wearer_wide_foot(text)
-        if any(marker in text for marker in ("좁", "끼", "눌", "까", "힘들", "작")):
+        wide_foot_context = _describes_wearer_wide_foot(width_text)
+        if width_tight_space:
             add("WIDTH_FIT", "WIDTH_SPACE", "TIGHT", "NEGATIVE")
         if (
-            any(marker in text for marker in ("여유", "넉넉", "발볼도 편", "발볼이 편"))
-            or ("넓" in text and not wide_foot_context)
+            width_roomy_space
+            or (_has_unnegated_term(width_text, ("넓",)) and not wide_foot_context)
         ):
             add("WIDTH_FIT", "WIDTH_SPACE", "ROOMY", "POSITIVE")
         if wide_foot_context or any(
-            marker in text
+            marker in width_text
             for marker in (
                 "발볼러",
                 "발볼 발등",
@@ -399,61 +683,350 @@ def classify_point_evidence(clause: str) -> tuple[PointSignal, ...]:
             )
         ):
             add("WIDTH_FIT", "FOOT_CONDITION", "WIDE_OR_HIGH_INSTEP", "NEUTRAL")
+    if toebox_subject:
+        if toebox_tight_space:
+            add("WIDTH_FIT", "TOEBOX_SPACE", "TIGHT", "NEGATIVE")
+        if toebox_roomy_space or _has_unnegated_term(toebox_text, ("넓",)):
+            add("WIDTH_FIT", "TOEBOX_SPACE", "ROOMY", "POSITIVE")
 
-    heel_subject = any(marker in text for marker in ("뒤꿈치", "뒷꿈치", "뒤축", "발목"))
+    heel_subject = bool(heel_text)
     if heel_subject:
-        if any(marker in text for marker in ("안정", "잡아", "받쳐", "지지")):
+        stable_negated = bool(
+            _has_negated_term(heel_text, ("안정", "잡아", "받쳐", "지지"))
+            or re.search(r"(?:잡아|받쳐|지지).{0,6}지\s*(?:않|못)", heel_text)
+        )
+        if not stable_negated and _has_unnegated_term(
+            heel_text, ("안정", "잡아", "받쳐", "지지")
+        ):
             add("HEEL_FEEL", "HEEL_HOLD", "STABLE", "POSITIVE")
-        if any(marker in text for marker in ("헐렁", "들뜨", "벗겨", "미끄러")):
+        if _has_unnegated_term(heel_text, ("헐렁", "들뜨", "벗겨", "미끄러")):
             add("HEEL_FEEL", "HEEL_HOLD", "LOOSE", "NEGATIVE")
-        if any(marker in text for marker in ("까", "쓸", "마찰", "불편")):
+        rubbing_negated = bool(
+            re.search(r"(?:쓸리|마찰).{0,4}지\s*(?:않|못)", heel_text)
+            or re.search(r"마찰(?:이|은)?\s*(?:없|적)", heel_text)
+        )
+        if not rubbing_negated and _has_unnegated_term(
+            heel_text, ("까", "쓸", "마찰")
+        ):
             add("HEEL_FEEL", "HEEL_COMFORT", "RUBBING", "NEGATIVE")
-        if any(marker in text for marker in ("편하", "폭신", "부드럽")):
+        elif _has_unnegated_term(heel_text, ("불편", "아프", "통증")):
+            add("HEEL_FEEL", "HEEL_COMFORT", "DISCOMFORT", "NEGATIVE")
+        heel_negative = _has_unnegated_term(
+            heel_text, ("까", "쓸", "마찰", "불편", "아프")
+        )
+        if not heel_negative and _has_unnegated_term(
+            heel_text, ("편하", "편해", "편합", "폭신", "부드럽")
+        ):
             add("HEEL_FEEL", "HEEL_COMFORT", "COMFORTABLE", "POSITIVE")
 
-    cushion_subject = any(marker in text for marker in ("쿠션", "깔창", "바닥", "발바닥"))
+    cushion_subject = bool(cushion_text)
     if cushion_subject:
-        soft_negated = bool(
-            re.search(r"푹신하?지\s*(?:않|못)", text)
-            or "안 푹신" in text
+        coordinated_neutral_cushion = bool(
+            re.search(
+                r"(?:푹신|폭신|부드럽).{0,16}(?:딱딱|단단).{0,12}"
+                r"(?:않|아니|아닙)",
+                cushion_text,
+            )
         )
-        if not soft_negated and any(marker in text for marker in ("푹신", "폭신", "부드럽")):
+        soft_negated = bool(
+            _has_negated_term(cushion_text, ("푹신", "폭신", "부드럽"))
+            or any(marker in cushion_text for marker in ("안 푹신", "안 폭신", "안 부드럽"))
+            or coordinated_neutral_cushion
+        )
+        if not soft_negated and _has_unnegated_term(
+            cushion_text, ("푹신", "폭신", "훅신", "부드럽")
+        ):
             add("CUSHION_FEEL", "CUSHION_SOFTNESS", "SOFT", "POSITIVE")
-        if soft_negated or any(marker in text for marker in ("딱딱", "쿠션감 없", "쿠션이 없")):
+        if _has_unnegated_term(
+            cushion_text,
+            ("딱딱", "단단", "쿠션감 없", "쿠션이 없", "바닥감"),
+        ):
             add("CUSHION_FEEL", "CUSHION_SOFTNESS", "FIRM", "NEGATIVE")
-        if "바닥" in text and "얇" in text:
-            add("CUSHION_FEEL", "SOLE_THICKNESS", "THIN", "NEGATIVE")
-        if "바닥" in text and "두껍" in text:
-            add("CUSHION_FEEL", "SOLE_THICKNESS", "THICK", "POSITIVE")
-        if "충격" in text:
-            add("CUSHION_FEEL", "SHOCK_FEEL", "HIGH" if negative else "LOW", "NEGATIVE" if negative else "POSITIVE")
+        if "충격" in cushion_text:
+            cushion_negative = _has_unnegated_term(
+                cushion_text, ("아프", "불편", "부담", "크")
+            )
+            add("CUSHION_FEEL", "SHOCK_FEEL", "HIGH" if cushion_negative else "LOW", "NEGATIVE" if cushion_negative else "POSITIVE")
+        cushion_quality_negative = bool(
+            re.search(
+                r"쿠션(?:감)?(?:이|은|도)?\s*"
+                r"(?:별로|부족|아쉽|불편|나쁘|크지\s*않)",
+                cushion_text,
+            )
+        )
+        cushion_quality_positive = bool(
+            not cushion_quality_negative
+            and re.search(
+                r"쿠션(?:감)?(?:이|은|도)?\s*"
+                r"(?:아주|정말|너무|꽤|대체로)?\s*"
+                r"(?:좋|만족|편안|편하)",
+                cushion_text,
+            )
+        )
+        if cushion_quality_positive:
+            add("CUSHION_FEEL", "CUSHION_QUALITY", "POSITIVE", "POSITIVE")
+        elif cushion_quality_negative:
+            add("CUSHION_FEEL", "CUSHION_QUALITY", "NEGATIVE", "NEGATIVE")
 
-    duration = any(marker in text for marker in ("오래", "장시간", "종일", "하루종일", "오래 서"))
+    insole_thickness_text = cushion_text if "깔창" in cushion_text else ""
+    if (
+        sole_text and _has_unnegated_term(sole_text, ("얇",))
+    ) or _has_unnegated_term(insole_thickness_text, ("얇",)):
+        add("CUSHION_FEEL", "SOLE_THICKNESS", "THIN", "NEGATIVE")
+    if (
+        sole_text and _has_unnegated_term(sole_text, ("두껍",))
+    ) or _has_unnegated_term(insole_thickness_text, ("두껍",)):
+        add("CUSHION_FEEL", "SOLE_THICKNESS", "THICK", "POSITIVE")
+
+    duration_scope = long_wear_text or text
+    duration_is_negated = bool(
+        re.search(
+            r"(?:오래|장시간|종일|하루\s*종일).{0,8}"
+            r"(?:신|착용|걷|걸(?:으면|을\s*때|어도)|서\s*있|활동)"
+            r"(?:지)?\s*(?:않|못)",
+            duration_scope,
+        )
+        or re.search(
+            r"(?:신|착용|걷|서\s*있|활동)(?:지)?\s*(?:않|못).{0,8}"
+            r"(?:오래|장시간|종일|하루\s*종일)",
+            duration_scope,
+        )
+    )
+    duration = not duration_is_negated and bool(
+        re.search(
+            r"(?:오래|장시간|종일|하루\s*종일).{0,10}"
+            r"(?:신|착용|걷|걸(?:으면|을\s*때|어도)|서\s*있|활동)",
+            duration_scope,
+        )
+        or re.search(
+            r"(?:신|착용|걷|걸(?:으면|을\s*때|어도)|서\s*있|활동).{0,10}"
+            r"(?:오래|장시간|종일|하루\s*종일)",
+            duration_scope,
+        )
+    )
     if duration and _has_unnegated_term(
-        text, ("아프", "아파", "피로", "불편", "부담", "힘들")
+        duration_scope, ("아프", "아파", "피로", "불편", "부담", "힘들")
     ):
         add("LONG_WEAR", "LONG_WEAR_COMFORT", "DISCOMFORT", "NEGATIVE")
     elif duration and _has_unnegated_term(
-        text, ("편하", "편해", "편했", "괜찮", "좋")
+        duration_scope, ("편하", "편해", "편합", "편했", "편안", "괜찮")
     ):
         add("LONG_WEAR", "LONG_WEAR_COMFORT", "COMFORTABLE", "POSITIVE")
 
-    heavy_is_negated = _has_negated_term(text, ("무게감", "무겁")) or bool(
+    if wear_text:
+        # `불편해요` contains the positive-looking substring `편해`.  An
+        # explicit negative predicate must therefore win before the generic
+        # positive check.
+        wear_contexts = _point_subject_contexts(text, "WEAR")
+        wear_negative = any(
+            _has_unnegated_term(context, ("아프", "불편", "답답", "힘들"))
+            for context in wear_contexts
+        )
+        wear_positive = any(
+            not _has_unnegated_term(context, ("아프", "불편", "답답", "힘들"))
+            and _has_unnegated_term(
+                context, ("편하", "편해", "편합", "편했", "편안", "좋", "만족")
+            )
+            for context in wear_contexts
+        )
+        if wear_negative:
+            add("OTHER", "WEAR_COMFORT", "DISCOMFORT", "NEGATIVE")
+        if wear_positive:
+            add("OTHER", "WEAR_COMFORT", "COMFORTABLE", "POSITIVE")
+
+    # Buyers much more often write "신어보니 편하다" or "발이 편하다"
+    # than the noun "착화감".  Keep the predicate tied to an explicit wearing
+    # subject so styling phrases such as "편하게 코디" cannot become comfort
+    # evidence. Consensus is still required by the aggregation layer.
+    if not wear_text:
+        explicit_subject_comfort = re.search(
+                r"(?:신발(?:이|은|도)?|발(?:이|은|도)?|"
+                r"신어\s*보(?:니|면)|신(?:고|으면|어도|었더니|었는데)|"
+                r"착용(?:하면|해\s*보니|했더니)).{0,18}"
+                r"(?:편하|편해|편안|불편|아프|답답|피로|부담)",
+                text,
+            )
+        standalone_comfort = re.search(
+            r"(?:^|\s)편(?:해요|합니다|하네요|안해요|안합니다)(?:\s|[.!?]|$)",
+            text,
+        )
+        standalone_has_local_typed_subject = bool(
+            standalone_comfort
+            and re.search(
+                r"(?:발볼|앞볼|앞코|발가락|사이즈|뒤꿈치|뒷꿈치|뒤축|"
+                r"발목|쿠션|깔창|바닥|밑창|통풍|통기|열감|습기)",
+                text[max(0, standalone_comfort.start() - 18) : standalone_comfort.start()],
+            )
+        )
+        explicit_wear_context = bool(
+            explicit_subject_comfort
+            or (standalone_comfort and not standalone_has_local_typed_subject)
+        )
+        if explicit_wear_context:
+            generic_wear_negative = _has_unnegated_term(
+                text, ("아프", "불편", "답답", "힘들", "피로", "부담")
+            )
+            generic_wear_positive = (
+                not generic_wear_negative
+                and _has_unnegated_term(
+                    text, ("편하", "편해", "편합", "편했", "편안")
+                )
+            )
+            if generic_wear_negative:
+                add("OTHER", "WEAR_COMFORT", "DISCOMFORT", "NEGATIVE")
+            elif generic_wear_positive:
+                add("OTHER", "WEAR_COMFORT", "COMFORTABLE", "POSITIVE")
+
+    if breathability_text:
+        breathability_negative = bool(
+            _has_unnegated_term(
+                breathability_text,
+                ("답답", "덥", "열감", "습기", "축축", "땀차", "땀이 차"),
+            )
+            or re.search(
+                r"(?:통풍|통기)(?:이|가|성(?:이|은)?)?.{0,8}"
+                r"(?:안\s*되|별로|부족|나쁘)",
+                breathability_text,
+            )
+        )
+        breathability_positive = bool(
+            not breathability_negative
+            and (
+                _has_unnegated_term(
+                    breathability_text,
+                    ("시원", "쾌적", "통풍", "통기"),
+                )
+                and not re.search(
+                    r"(?:통풍|통기)(?:이|가|성(?:이|은)?)?.{0,8}"
+                    r"(?:안\s*되|별로|부족|나쁘)",
+                    breathability_text,
+                )
+            )
+        )
+        if breathability_negative:
+            add("OTHER", "BREATHABILITY", "LOW", "NEGATIVE")
+        elif breathability_positive:
+            add("OTHER", "BREATHABILITY", "HIGH", "POSITIVE")
+
+    heavy_is_negated = _has_negated_term(text, ("무게감", "무겁", "무거")) or bool(
         re.search(r"무게감(?:이|은|도)?\s*(?:없|적)", text)
     )
-    if not heavy_is_negated and _has_unnegated_term(text, ("무게감", "무겁")):
+    # ``쿠션에서 무게감이 느껴진다`` is not an assertion about the shoe's
+    # physical weight.  Keep that ambiguous cushion wording out of WEIGHT so it
+    # can never be rewritten as either ``무겁다`` or ``가볍다`` downstream.
+    def has_physical_weight_predicate(terms: tuple[str, ...]) -> bool:
+        nonphysical_subjects = (
+            "쿠션",
+            "쿠션감",
+            "깔창",
+            "바닥",
+            "디자인",
+            "색감",
+            "색상",
+            "실루엣",
+            "외관",
+        )
+        physical_subjects = ("신발", "제품", "착화", "신었", "들었", "무게")
+        for term in terms:
+            for match in re.finditer(re.escape(term), text):
+                if _term_occurrence_is_negated(text, match.start(), match.end()):
+                    continue
+                prefix = text[max(0, match.start() - 28) : match.start()]
+                suffix = text[match.end() : match.end() + 24]
+                if re.match(
+                    r"(?:운|운\s*느낌의|게\s*느껴지는)?\s*"
+                    r"(?:쿠션(?:감)?|깔창|바닥|디자인|색감|색상|실루엣|외관)",
+                    suffix,
+                ):
+                    continue
+                if term == "무게감":
+                    if re.search(
+                        r"(?:쿠션(?:감)?|깔창|바닥|디자인|색감|색상|실루엣|외관)"
+                        r"(?:에서|에|의|이\s*주는|이\s*느껴지는)\s*(?:다소\s*)?$",
+                        prefix,
+                    ):
+                        continue
+                    return True
+                last_nonphysical = max(
+                    (prefix.rfind(subject) for subject in nonphysical_subjects),
+                    default=-1,
+                )
+                last_physical = max(
+                    (prefix.rfind(subject) for subject in physical_subjects),
+                    default=-1,
+                )
+                if last_nonphysical > last_physical:
+                    continue
+                return True
+        return False
+    if (
+        not heavy_is_negated
+        and has_physical_weight_predicate(("무게감", "무겁", "무거"))
+    ):
         add("WEIGHT_FEEL", "WEIGHT", "HEAVY", "NEGATIVE")
-    if _has_unnegated_term(text, ("가볍",)):
+    if has_physical_weight_predicate(("가볍", "가벼")):
         add("WEIGHT_FEEL", "WEIGHT", "LIGHT", "POSITIVE")
 
-    appearance = any(marker in text for marker in ("디자인", "색감", "색상", "예쁘", "예뻐", "이뻐"))
+    appearance = bool(appearance_text) or any(
+        marker in text for marker in ("예쁘", "예뻐", "예쁩", "이뻐")
+    )
     if appearance:
-        add("DESIGN", "APPEARANCE", "POSITIVE" if positive or any(marker in text for marker in ("예쁘", "예뻐", "이뻐", "마음에")) else "MENTIONED", "POSITIVE" if positive else "NEUTRAL")
-    if "둥글" in text:
+        appearance_contexts = _point_subject_contexts(text, "APPEARANCE") or (
+            appearance_text or text,
+        )
+        appearance_negative = any(
+            _has_negated_term(
+                context,
+                ("예쁘", "예뻐", "예쁩", "이뻐", "좋", "깔끔", "만족"),
+            )
+            or any(
+                marker in context
+                for marker in (
+                    "디자인이 별로",
+                    "디자인은 별로",
+                    "색감이 별로",
+                    "색감은 별로",
+                    "색상은 별로",
+                    "외관은 별로",
+                    "마음에 안",
+                    "마음에 들지 않",
+                )
+            )
+            for context in appearance_contexts
+        )
+        appearance_positive = any(
+            _has_unnegated_term(
+                context,
+                (
+                    "예쁘",
+                    "예뻐",
+                    "예쁩",
+                    "이뻐",
+                    "좋",
+                    "깔끔",
+                    "만족",
+                    "마음에 들",
+                ),
+            )
+            for context in appearance_contexts
+        )
+        if appearance_positive:
+            add("DESIGN", "APPEARANCE", "POSITIVE", "POSITIVE")
+        if appearance_negative:
+            add("DESIGN", "APPEARANCE", "NEGATIVE", "NEGATIVE")
+        if not appearance_positive and not appearance_negative:
+            add("DESIGN", "APPEARANCE", "MENTIONED", "NEUTRAL")
+    if _has_unnegated_term(text, ("둥글",)):
         add("DESIGN", "SILHOUETTE", "ROUNDED", "NEUTRAL")
-    if "날렵" in text:
+    if _has_unnegated_term(text, ("날렵", "슬림한 실루엣")):
         add("DESIGN", "SILHOUETTE", "SLIM", "NEUTRAL")
-    if any(marker in text for marker in ("로우", "낮은 굽", "굽은 낮")):
+    profile_negated = bool(
+        _has_negated_term(text, ("로우 프로파일", "로우", "낮은 굽", "굽은 낮"))
+        or re.search(r"로우.{0,18}(?:아니|아닌|아닙|않|못)", text)
+    )
+    if not profile_negated and _has_unnegated_term(
+        text, ("로우 프로파일", "로우", "낮은 굽", "굽은 낮")
+    ):
         add("DESIGN", "PROFILE", "LOW", "NEUTRAL")
 
     styling_values = {
@@ -463,21 +1036,62 @@ def classify_point_evidence(clause: str) -> tuple[PointSignal, ...]:
         "WIDE_PANTS": ("통큰 바지", "와이드 팬츠"),
         "DAILY": ("데일리", "일상용"),
     }
-    negative_pairing = _has_negated_term(text, ("어울",))
-    positive_pairing = _has_unnegated_term(text, ("잘 어울", "잘어울", "어울"))
+    negative_pairing = bool(
+        _has_negated_term(styling_text, ("어울", "좋", "쉽"))
+        or re.search(r"어울리?지\s*(?:않|못)", styling_text)
+        or re.search(r"(?:코디|매치|활용|신기).{0,8}(?:어렵|좋지 않|쉽지 않)", styling_text)
+    )
+    positive_pairing = not negative_pairing and _has_unnegated_term(
+        styling_text, ("잘 어울", "잘어울", "어울")
+    )
+    explicit_styling_positive = bool(
+        positive_pairing
+        or (
+            re.search(r"(?:코디|매치|활용).{0,8}(?:좋|쉽)", styling_text)
+            and _has_unnegated_term(styling_text, ("좋", "쉽"))
+        )
+        or (
+            re.search(r"(?:신기|신어|착용하기).{0,8}좋", styling_text)
+            and _has_unnegated_term(styling_text, ("좋",))
+        )
+    )
+    mentioned_styling_values: set[str] = set()
     for value, markers in styling_values.items():
-        if any(marker in text for marker in markers):
+        if any(marker in styling_text for marker in markers):
+            mentioned_styling_values.add(value)
             outfit_stance = (
                 "NEGATIVE"
                 if negative_pairing
-                else ("POSITIVE" if positive_pairing or positive else "NEUTRAL")
+                else ("POSITIVE" if explicit_styling_positive else "NEUTRAL")
             )
             add("STYLING", "OUTFIT", value, outfit_stance)
-    if (positive_pairing or "스타일내기" in text) and not negative_pairing:
+    generic_styling_context = any(
+        marker in styling_text
+        for marker in (
+            "여기저기",
+            "어디에나",
+            "어디든",
+            "다양한 코디",
+            "다양한 스타일",
+            "여러 코디",
+            "코디하기",
+            "스타일내기",
+        )
+    )
+    if (
+        explicit_styling_positive
+        and (generic_styling_context or (positive_pairing and not mentioned_styling_values))
+        and not negative_pairing
+    ):
         add("STYLING", "OUTFIT", "GENERAL", "POSITIVE")
 
-    if not signals and any(marker in text for marker in ("소재", "굽", "착화감")):
-        add("OTHER", "PRODUCT_DETAIL", "MENTIONED", "NEUTRAL")
+    if not signals:
+        if "소재" in text:
+            add("OTHER", "MATERIAL_DETAIL", "MENTIONED", "NEUTRAL")
+        if "굽" in text:
+            add("OTHER", "HEEL_HEIGHT_DETAIL", "MENTIONED", "NEUTRAL")
+        if "착화감" in text:
+            add("OTHER", "PRODUCT_DETAIL", "MENTIONED", "NEUTRAL")
     return tuple(sorted(signals))
 
 
@@ -530,38 +1144,68 @@ def derive_foot_need(state: ServerUserFootState) -> FootNeed:
         forefoot_note_parts.append(f"무지외반 각도가 {max_hallux_angle:.1f}도로 앞코 압박에 주의가 필요")
     forefoot_note = ", ".join(forefoot_note_parts) or "발볼과 앞코 압박이 크지 않은 평이한 발 상태"
 
-    left_pressure = _safe(daily.left_pressure_percent, 50.0) if daily else 50.0
-    right_pressure = _safe(daily.right_pressure_percent, 50.0) if daily else 50.0
-    pressure_imbalance = abs(left_pressure - right_pressure)
-    balance_score = _safe(daily.balance_score, 100.0) if daily else 100.0
-    skin_reaction_score = _safe(tinea.skin_reaction_safety_score, 100.0) if tinea else 100.0
-
+    pressure_imbalances: list[float] = []
+    if (
+        daily is not None
+        and daily.left_pressure_percent is not None
+        and daily.right_pressure_percent is not None
+    ):
+        pressure_imbalances.append(
+            abs(daily.left_pressure_percent - daily.right_pressure_percent)
+        )
+    pressure_imbalances.extend(
+        abs(row.left_pressure_ratio - row.right_pressure_ratio)
+        for row in state.static_pressure_analyses
+        if row.left_pressure_ratio is not None and row.right_pressure_ratio is not None
+    )
+    pressure_imbalance = max(pressure_imbalances, default=0.0)
+    balance_values = [
+        value
+        for value in (
+            daily.balance_score if daily else None,
+            *(row.balance_score for row in state.static_pressure_analyses),
+        )
+        if value is not None
+    ]
+    balance_score = min(balance_values, default=100.0)
+    rearfoot_pressure = max(
+        (
+            row.rearfoot_pressure_ratio
+            for row in state.static_pressure_analyses
+            if row.rearfoot_pressure_ratio is not None
+        ),
+        default=0.0,
+    )
     heel_instability_risk = (
         pressure_imbalance >= settings.shoe_pressure_imbalance_neutral_percent
         or balance_score < settings.shoe_balance_neutral_score
-        or skin_reaction_score < settings.shoe_skin_safety_neutral_score
+        or rearfoot_pressure >= settings.shoe_rearfoot_pressure_neutral_percent
     )
     heel_note_parts = []
     if pressure_imbalance >= settings.shoe_pressure_imbalance_neutral_percent:
         heel_note_parts.append(f"좌우 압력 차이가 {pressure_imbalance:.1f}%p")
     if balance_score < settings.shoe_balance_neutral_score:
         heel_note_parts.append(f"자세 균형 점수가 {balance_score:.0f}점으로 낮은 편")
-    if skin_reaction_score < settings.shoe_skin_safety_neutral_score:
-        heel_note_parts.append("피부 자극/염증 반응이 있어 마찰에 민감")
+    if rearfoot_pressure >= settings.shoe_rearfoot_pressure_neutral_percent:
+        heel_note_parts.append(f"뒤꿈치 영역 하중 비율이 {rearfoot_pressure:.1f}%로 높은 편")
     heel_note = ", ".join(heel_note_parts) or "좌우 압력과 자세 균형이 안정적인 편"
 
     humidity = _safe(daily.avg_humidity_percent) if daily else 0.0
     fungal_score = _safe(tinea.fungal_suspicion_safety_score, 100.0) if tinea else 100.0
+    skin_reaction_score = _safe(tinea.skin_reaction_safety_score, 100.0) if tinea else 100.0
 
     breathability_needed = (
         humidity >= settings.shoe_humidity_neutral_percent
         or fungal_score < settings.shoe_fungal_safety_neutral_score
+        or skin_reaction_score < settings.shoe_skin_safety_neutral_score
     )
     insole_note_parts = []
     if humidity >= settings.shoe_humidity_neutral_percent:
         insole_note_parts.append(f"평균 습도가 {humidity:.0f}%로 높은 편")
     if fungal_score < settings.shoe_fungal_safety_neutral_score:
         insole_note_parts.append("무좀 의심 신호가 있어 통기성 관리가 필요")
+    if skin_reaction_score < settings.shoe_skin_safety_neutral_score:
+        insole_note_parts.append("피부 반응 지표상 내부 환경 관리가 필요")
     insole_note = ", ".join(insole_note_parts) or "발 환경(습도)이 양호한 편"
 
     return FootNeed(
@@ -583,27 +1227,29 @@ def build_need_query(reason_type: str, need: FootNeed) -> str:
         )
         return (
             f"{need.forefoot_note}. {requirement}. 무신사 실제 착화 리뷰에서 발볼/앞코가 "
-            "넓고 편안하거나, 반대로 좁아 아프고 발가락이 눌리는 경험을 모두 찾는다."
+            "넓고 편안하거나, 반대로 좁아 아프고 발가락이 눌리는 경험과 정사이즈·"
+            "사이즈 업·다운 조언을 모두 찾는다."
         )
     if reason_type == "HEEL":
         requirement = (
-            "뒤꿈치를 안정적으로 잡아주고 마찰이 적은 신발이 필요하다"
+            "뒤꿈치 영역 하중과 좌우 균형을 고려해 충격 부담을 덜어주는 신발이 필요하다"
             if need.heel_instability_risk
-            else "뒤꿈치 안정성에 큰 제약은 없는 발 상태다"
+            else "뒤꿈치 영역 하중과 좌우 균형의 추가 부담이 크지 않은 상태다"
         )
         return (
-            f"{need.heel_note}. {requirement}. 무신사 실제 착화 리뷰에서 뒤꿈치가 안정적으로 "
-            "잡히거나, 반대로 들뜨고 벗겨지고 쓸려 까지는 경험을 모두 찾는다."
+            f"{need.heel_note}. {requirement}. 무신사 실제 착화 리뷰에서 쿠션감, 바닥 충격, "
+            "장시간 착용 시 발 부담, 안정감과 착화감에 관한 긍정·부정 경험을 모두 찾는다. "
+            "사용자의 뒤꿈치 움직임이나 고정감으로 해석하지 않는다."
         )
     if reason_type == "INSOLE":
         requirement = (
-            "통기성이 좋고 쿠션감 있는 깔창이 필요하다"
+            "통기성이 좋고 내부 습기와 열감을 관리하기 쉬운 신발이 필요하다"
             if need.breathability_needed
             else "깔창 통기성에 큰 제약은 없는 발 상태다"
         )
         return (
-            f"{need.insole_note}. {requirement}. 무신사 실제 착화 리뷰에서 깔창이 푹신하고 "
-            "통풍이 좋거나, 반대로 딱딱하고 충격이 크고 답답하며 열감이나 땀이 나는 경험을 모두 찾는다."
+            f"{need.insole_note}. {requirement}. 무신사 실제 착화 리뷰에서 통풍, 열감, 습기, "
+            "깔창과 신발 내부의 쾌적함에 관한 긍정·부정 경험을 모두 찾는다."
         )
     raise ValueError(f"Unknown reason type: {reason_type}")
 

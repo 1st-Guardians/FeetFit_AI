@@ -9,6 +9,17 @@ from app.core.config import Settings
 
 
 class ShoeSettingsContractTests(unittest.TestCase):
+    def test_embedding_model_defaults_to_local_cache_with_explicit_opt_out(self) -> None:
+        self.assertTrue(
+            Settings(_env_file=None).shoe_embedding_local_files_only
+        )
+        self.assertFalse(
+            Settings(
+                _env_file=None,
+                shoe_embedding_local_files_only=False,
+            ).shoe_embedding_local_files_only
+        )
+
     def test_accepts_server_and_payload_contract_boundaries(self) -> None:
         minimums = Settings(
             _env_file=None,
@@ -173,6 +184,7 @@ class ShoeSettingsContractTests(unittest.TestCase):
         for field_name in (
             "report_proxy_timeout_seconds",
             "ollama_request_timeout_seconds",
+            "ollama_direct_summary_deadline_seconds",
         ):
             for invalid in (0, -0.1, 3600.1):
                 with (
@@ -180,6 +192,14 @@ class ShoeSettingsContractTests(unittest.TestCase):
                     self.assertRaises(ValidationError),
                 ):
                     Settings(_env_file=None, **{field_name: invalid})
+
+    def test_direct_summary_runtime_defaults_are_bounded_and_prewarm_is_opt_in(
+        self,
+    ) -> None:
+        values = Settings(_env_file=None)
+        self.assertEqual(values.ollama_direct_summary_deadline_seconds, 8.5)
+        self.assertEqual(values.ollama_keep_alive, "30m")
+        self.assertFalse(values.ollama_prewarm_on_startup)
 
 
 if __name__ == "__main__":

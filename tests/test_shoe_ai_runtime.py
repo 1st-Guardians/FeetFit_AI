@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 
 from app import main
+from app.schemas.shoe_fit_comment import ShoeFitSummary
+from app.schemas.shoe_server import ServerPersonalFitEvidence, ServerShoeCharacteristics
 from app.services.shoe import shoe_embedding
 from app.services.shoe import shoe_fit_comment_service
 from app.services.shoe.shoe_fit_comment_service import (
@@ -17,10 +19,11 @@ from app.services.shoe.shoe_fit_comment_service import (
     generate_shoe_summaries,
     prepare_grounded_reasons,
 )
+from app.services.shoe.shoe_review_evidence_policy import NO_REVIEW_SUMMARY
 
 
 class _Response:
-    def __init__(self, content: str) -> None:
+    def __init__(self, content: object) -> None:
         self.content = content
 
 
@@ -35,6 +38,28 @@ class ShoeEmbeddingRuntimeTests(unittest.TestCase):
     def test_explicit_cuda_falls_back_when_cuda_is_unavailable(self) -> None:
         with patch.object(shoe_embedding.torch.cuda, "is_available", return_value=False):
             self.assertEqual(shoe_embedding.resolve_device("cuda"), "cpu")
+
+    def test_model_loading_uses_local_cache_without_network_resolution(self) -> None:
+        model = MagicMock()
+        with (
+            patch.object(
+                shoe_embedding.settings,
+                "shoe_embedding_local_files_only",
+                True,
+            ),
+            patch(
+                "sentence_transformers.SentenceTransformer",
+                return_value=model,
+            ) as model_type,
+        ):
+            loaded = shoe_embedding._load_model("cuda")
+
+        self.assertIs(loaded, model)
+        model_type.assert_called_once_with(
+            shoe_embedding.settings.shoe_embedding_model_name,
+            device="cuda",
+            local_files_only=True,
+        )
 
     def test_cuda_encode_failure_retries_once_on_cpu(self) -> None:
         gpu_model = MagicMock()
@@ -54,7 +79,9 @@ class ShoeEmbeddingRuntimeTests(unittest.TestCase):
             vectors = shoe_embedding.embed_texts(["발볼"])
 
         model_type.assert_called_once_with(
-            shoe_embedding.settings.shoe_embedding_model_name, device="cpu"
+            shoe_embedding.settings.shoe_embedding_model_name,
+            device="cpu",
+            local_files_only=shoe_embedding.settings.shoe_embedding_local_files_only,
         )
         self.assertEqual(shoe_embedding._model_device, "cpu")
         np.testing.assert_array_equal(vectors, np.array([[1.0, 0.0]], dtype=np.float32))
@@ -191,6 +218,352 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
             for reason_type in ("FOREFOOT", "HEEL", "INSOLE")
         ]
 
+    def test_new_llm_uses_exact_shoe_fit_summary_json_schema(self) -> None:
+        with patch(
+            "app.services.shoe.shoe_fit_comment_service.ChatOllama"
+        ) as chat_ollama:
+            shoe_fit_comment_service._new_llm(-1)
+
+        schema = chat_ollama.call_args.kwargs["format"]
+        expected_schema = ShoeFitSummary.model_json_schema(by_alias=True)
+        expected_schema["required"].append("pointSummaryClaims")
+        self.assertEqual(schema, expected_schema)
+        self.assertIn("pointSummaryClaims", schema["required"])
+        self.assertEqual(
+            chat_ollama.call_args.kwargs["keep_alive"],
+            shoe_fit_comment_service.settings.ollama_keep_alive,
+        )
+        self.assertEqual(schema["properties"]["pointSummary"]["type"], "string")
+        self.assertEqual(schema["properties"]["forefootSummary"]["type"], "string")
+        self.assertEqual(
+            schema["properties"]["forefootReviewIds"]["items"]["type"],
+            "integer",
+        )
+
+    def test_generated_reason_grounding_rejects_reversed_risk_direction(self) -> None:
+        high_reason = ReasonFactsForPrompt(
+            reason_type="HEEL",
+            title="뒤꿈치 적합도 주의",
+            risk_level="HIGH",
+            review_ids=[101],
+            review_texts=["쿠션감이 부족하고 불편해요."],
+        )
+        low_reason = ReasonFactsForPrompt(
+            reason_type="HEEL",
+            title="뒤꿈치 적합도 좋음",
+            risk_level="LOW",
+            review_ids=[201],
+            review_texts=["쿠션감이 좋고 편안해요."],
+        )
+        personal_fit_evidence = ServerPersonalFitEvidence.model_validate(
+            {"leftPressurePercent": 80, "rightPressurePercent": 20}
+        )
+
+        self.assertFalse(
+            shoe_fit_comment_service._generated_reason_summary_is_grounded(
+                "제품의 쿠션감은 좋고 편안하지만 구매 전 주의하세요.",
+                high_reason,
+            )
+        )
+        self.assertFalse(
+            shoe_fit_comment_service._generated_reason_summary_is_grounded(
+                "좌우 압력 차이가 큰 편입니다. "
+                "제품의 쿠션감은 단단하고 불편합니다.",
+                low_reason,
+                personal_fit_evidence,
+            )
+        )
+
+    async def test_reason_copy_is_locked_to_deterministic_policy_even_when_grounded(
+        self,
+    ) -> None:
+        reasons = [
+            ReasonFactsForPrompt(
+                reason_type="FOREFOOT",
+                title="발볼 적합도 주의",
+                risk_level="HIGH",
+                review_ids=[101],
+                review_texts=["발볼이 좁아서 압박이 느껴집니다."],
+            ),
+            ReasonFactsForPrompt(
+                reason_type="HEEL",
+                title="뒤꿈치 적합도 좋음",
+                risk_level="LOW",
+                review_ids=[201],
+                review_texts=["뒤꿈치를 안정적으로 잡아줍니다."],
+            ),
+            ReasonFactsForPrompt(
+                reason_type="INSOLE",
+                title="깔창 적합도 보통",
+                risk_level="MEDIUM",
+                review_ids=[301],
+                review_texts=["깔창 내부가 답답하고 불편합니다."],
+            ),
+        ]
+        forefoot = "발볼이 좁고 압박이 느껴질 수 있어 주의가 필요합니다."
+        heel = "뒤꿈치를 안정적으로 잡아주는 편입니다."
+        llm = MagicMock()
+        llm.ainvoke = AsyncMock(
+            return_value=_Response(
+                '{"pointSummary":"종합",'
+                '"pointSummaryClaims":[],'
+                f'"forefootSummary":"{forefoot}",'
+                f'"heelSummary":"{heel}",'
+                '"insoleSummary":"디자인이 예쁩니다.",'
+                '"forefootReviewIds":[101],"heelReviewIds":[201],'
+                '"insoleReviewIds":[301]}'
+            )
+        )
+
+        with patch(
+            "app.services.shoe.shoe_fit_comment_service._get_llm",
+            return_value=llm,
+        ):
+            summary = await generate_shoe_summaries(
+                shoe_name="테스트 신발",
+                fit_score=60.0,
+                overall_risk_level="MEDIUM",
+                reasons=reasons,
+            )
+
+        expected = shoe_fit_comment_service.build_immediate_shoe_summaries(
+            shoe_name="테스트 신발",
+            fit_score=60.0,
+            overall_risk_level="MEDIUM",
+            reasons=reasons,
+        )
+        self.assertNotEqual(summary.forefoot_summary, forefoot)
+        self.assertNotEqual(summary.heel_summary, heel)
+        self.assertNotEqual(summary.insole_summary, "디자인이 예쁩니다.")
+        self.assertEqual(summary.forefoot_summary, expected.forefoot_summary)
+        self.assertEqual(summary.heel_summary, expected.heel_summary)
+        self.assertEqual(summary.insole_summary, expected.insole_summary)
+
+    def test_deterministic_fallback_is_natural_for_point_and_every_reason(
+        self,
+    ) -> None:
+        reasons = [
+            ReasonFactsForPrompt("FOREFOOT", "발볼 적합도 주의", "HIGH", [], []),
+            ReasonFactsForPrompt("HEEL", "뒤꿈치 적합도 보통", "MEDIUM", [], []),
+            ReasonFactsForPrompt("INSOLE", "깔창 적합도 좋음", "LOW", [], []),
+        ]
+        characteristics = ServerShoeCharacteristics.model_validate(
+            {
+                "shoeId": 90,
+                "summary": "실측 특성",
+                "characteristics": [
+                    {"type": "WIDTH_SPACE", "level": "MEDIUM"},
+                    {"type": "TOEBOX_SPACE", "level": "LOW"},
+                    {"type": "CUSHION", "level": "LOW"},
+                ],
+            }
+        )
+
+        summary = shoe_fit_comment_service.build_immediate_shoe_summaries(
+            shoe_name="테스트 신발",
+            fit_score=60.0,
+            overall_risk_level="MEDIUM",
+            reasons=reasons,
+            characteristics=characteristics,
+        )
+
+        self.assertIn("발볼은 평균적인 너비", summary.point_summary)
+        self.assertIn("앞코는 비교적 여유가 적", summary.point_summary)
+        self.assertIn("쿠션은 비교적 단단", summary.point_summary)
+        for area_summary in (
+            summary.forefoot_summary,
+            summary.heel_summary,
+            summary.insole_summary,
+        ):
+            self.assertEqual(area_summary, NO_REVIEW_SUMMARY)
+
+    def test_immediate_summary_uses_only_supplied_personal_measurements(self) -> None:
+        reasons = [
+            ReasonFactsForPrompt(
+                "FOREFOOT",
+                "발볼 적합도 주의",
+                "HIGH",
+                [101],
+                ["발볼이 좁고 발가락이 눌려 아파요."],
+            ),
+            ReasonFactsForPrompt(
+                "HEEL",
+                "뒤꿈치 적합도 보통",
+                "MEDIUM",
+                [201],
+                ["쿠션이 푹신하고 오래 걸어도 편해요."],
+            ),
+            ReasonFactsForPrompt(
+                "INSOLE",
+                "깔창 적합도 보통",
+                "MEDIUM",
+                [301],
+                ["신발 내부가 시원하고 쾌적해요."],
+            ),
+        ]
+        evidence = ServerPersonalFitEvidence.model_validate(
+            {
+                "balanceScore": 70.0,
+                "leftPressurePercent": 42.0,
+                "rightPressurePercent": 58.0,
+                "measuredLeftFootSizeMm": 260.0,
+                "measuredRightFootSizeMm": 262.0,
+                "leftFootWidthMm": 110.0,
+                "rightFootWidthMm": 111.0,
+                "avgHumidityPercent": 68.0,
+                "fungalSuspicionSafetyScore": 50,
+                "skinReactionSafetyScore": 40,
+                "leftToeAngleDegree": 22.0,
+                "rightToeAngleDegree": 8.0,
+                "staticPressureAnalyses": [
+                    {
+                        "footSide": "LEFT",
+                        "leftPressureRatio": 61.0,
+                        "rightPressureRatio": 39.0,
+                        "forefootPressureRatio": 78.0,
+                        "rearfootPressureRatio": 22.0,
+                        "balanceScore": 72.0,
+                    },
+                    {
+                        "footSide": "RIGHT",
+                        "leftPressureRatio": 35.0,
+                        "rightPressureRatio": 65.0,
+                        "forefootPressureRatio": 18.0,
+                        "rearfootPressureRatio": 82.0,
+                        "balanceScore": 60.0,
+                    },
+                ],
+            }
+        )
+
+        summary = shoe_fit_comment_service.build_immediate_shoe_summaries(
+            shoe_name="테스트 신발",
+            fit_score=55.0,
+            overall_risk_level="MEDIUM",
+            reasons=reasons,
+            personal_fit_evidence=evidence,
+        )
+
+        self.assertTrue(summary.forefoot_summary.startswith("측정 결과 "))
+        self.assertIn("발볼 여유", summary.forefoot_summary)
+        self.assertIn("앞코 압박", summary.forefoot_summary)
+        self.assertNotIn("하중", summary.forefoot_summary)
+        self.assertTrue(summary.heel_summary.startswith("측정 결과 "))
+        self.assertIn("뒤꿈치 쪽 하중", summary.heel_summary)
+        self.assertIn("좌우 압력 차이", summary.heel_summary)
+        self.assertIn("자세 균형 점수", summary.heel_summary)
+        self.assertTrue(summary.insole_summary.startswith("측정 결과 "))
+        self.assertIn("발 내부 습도", summary.insole_summary)
+        self.assertIn("통기성 관리", summary.insole_summary)
+        self.assertIn("피부 반응 관리", summary.insole_summary)
+
+    def test_immediate_summary_never_invents_missing_pressure_evidence(self) -> None:
+        reasons = [
+            ReasonFactsForPrompt(
+                "FOREFOOT",
+                "발볼 적합도 주의",
+                "HIGH",
+                [101],
+                ["발볼이 좁고 발가락이 눌려 아파요."],
+            ),
+            ReasonFactsForPrompt("HEEL", "뒤꿈치 적합도 보통", "MEDIUM", [], []),
+            ReasonFactsForPrompt("INSOLE", "깔창 적합도 보통", "MEDIUM", [], []),
+        ]
+        width_only = ServerPersonalFitEvidence.model_validate(
+            {
+                "measuredLeftFootSizeMm": 260.0,
+                "leftFootWidthMm": 110.0,
+            }
+        )
+
+        summary = shoe_fit_comment_service.build_immediate_shoe_summaries(
+            shoe_name="테스트 신발",
+            fit_score=55.0,
+            overall_risk_level="MEDIUM",
+            reasons=reasons,
+            personal_fit_evidence=width_only,
+        )
+
+        self.assertTrue(summary.forefoot_summary.startswith("측정 결과 "))
+        self.assertIn("발볼 여유", summary.forefoot_summary)
+        for unsupported in ("측정 결과", "하중", "압력", "습도"):
+            self.assertNotIn(unsupported, summary.heel_summary)
+            self.assertNotIn(unsupported, summary.insole_summary)
+        self.assertEqual(summary.heel_summary, NO_REVIEW_SUMMARY)
+        self.assertEqual(summary.insole_summary, NO_REVIEW_SUMMARY)
+
+    async def test_prewarm_uses_load_only_generate_request_and_keep_alive(self) -> None:
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.post = AsyncMock(return_value=response)
+
+        with patch(
+            "app.services.shoe.shoe_fit_comment_service.httpx.AsyncClient",
+            return_value=client,
+        ):
+            warmed = await shoe_fit_comment_service.prewarm_ollama_model()
+
+        self.assertTrue(warmed)
+        client.post.assert_awaited_once_with(
+            f"{shoe_fit_comment_service.settings.ollama_base_url.rstrip('/')}/api/generate",
+            json={
+                "model": shoe_fit_comment_service.settings.ollama_model,
+                "prompt": "",
+                "stream": False,
+                "keep_alive": shoe_fit_comment_service.settings.ollama_keep_alive,
+            },
+        )
+
+    async def test_schema_invalid_response_is_corrected_once(self) -> None:
+        llm = MagicMock()
+        llm.ainvoke = AsyncMock(
+            side_effect=[
+                _Response(
+                    '{"pointSummary":{"WIDTH_FIT":{}},'
+                    '"forefootSummary":{},"heelSummary":{},"insoleSummary":{},'
+                    '"forefootReviewIds":[],"heelReviewIds":[],"insoleReviewIds":[]}'
+                ),
+                _Response(
+                    '{"pointSummary":"종합",'
+                    '"forefootSummary":"FOREFOOT title. 정량 결과입니다.",'
+                    '"heelSummary":"HEEL title. 정량 결과입니다.",'
+                    '"insoleSummary":"INSOLE title. 정량 결과입니다.",'
+                    '"forefootReviewIds":[],"heelReviewIds":[],"insoleReviewIds":[]}'
+                ),
+            ]
+        )
+
+        with (
+            patch(
+                "app.services.shoe.shoe_fit_comment_service._get_llm",
+                return_value=llm,
+            ),
+            patch(
+                "app.services.shoe.shoe_fit_comment_service.logger.info"
+            ) as info,
+        ):
+            summary = await generate_shoe_summaries(
+                shoe_name="테스트 신발",
+                fit_score=77.0,
+                overall_risk_level="LOW",
+                reasons=self._reasons(),
+            )
+
+        self.assertEqual(summary.point_summary, "종합")
+        self.assertEqual(llm.ainvoke.await_count, 2)
+        correction_messages = llm.ainvoke.await_args_list[1].args[0]
+        self.assertEqual(len(correction_messages), 3)
+        self.assertIn("스키마", correction_messages[-1].content)
+        self.assertTrue(
+            any(
+                str(call.args[-1]).startswith("OLLAMA_CORRECTED")
+                for call in info.call_args_list
+            )
+        )
+
     async def test_gpu_failure_falls_back_to_cpu_without_changing_facts(self) -> None:
         gpu = MagicMock()
         gpu.ainvoke = AsyncMock(side_effect=RuntimeError("GPU runner failed"))
@@ -228,20 +601,37 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
         gpu.ainvoke.assert_awaited_once()
         cpu.ainvoke.assert_awaited_once()
 
-    async def test_invalid_ollama_json_is_rejected(self) -> None:
+    async def test_invalid_ollama_json_preserves_typed_fallback(self) -> None:
         llm = MagicMock()
         llm.ainvoke = AsyncMock(return_value=_Response("not json"))
         with patch(
             "app.services.shoe.shoe_fit_comment_service._get_llm",
             return_value=llm,
         ):
-            with self.assertRaises(ShoeFitCommentError):
-                await generate_shoe_summaries(
-                    shoe_name="테스트 신발",
-                    fit_score=55.0,
-                    overall_risk_level="MEDIUM",
-                    reasons=self._reasons(),
-                )
+            summary = await generate_shoe_summaries(
+                shoe_name="테스트 신발",
+                fit_score=55.0,
+                overall_risk_level="MEDIUM",
+                reasons=self._reasons(),
+            )
+        self.assertIn("일관된 근거가 아직 부족", summary.point_summary)
+        self.assertEqual(llm.ainvoke.await_count, 2)
+
+    async def test_non_string_ollama_content_preserves_typed_fallback(self) -> None:
+        llm = MagicMock()
+        llm.ainvoke = AsyncMock(return_value=_Response(None))
+        with patch(
+            "app.services.shoe.shoe_fit_comment_service._get_llm",
+            return_value=llm,
+        ):
+            summary = await generate_shoe_summaries(
+                shoe_name="테스트 신발",
+                fit_score=55.0,
+                overall_risk_level="MEDIUM",
+                reasons=self._reasons(),
+            )
+        self.assertIn("일관된 근거가 아직 부족", summary.point_summary)
+        self.assertEqual(llm.ainvoke.await_count, 2)
 
     async def test_schema_invalid_ollama_uses_typed_evidence_fallback(self) -> None:
         reasons = [
@@ -261,8 +651,8 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 risk_level="LOW",
                 review_ids=[201, 202],
                 review_texts=[
-                    "발목을 안정적으로 잡아줍니다.",
-                    "뒤꿈치를 안정적으로 받쳐줍니다.",
+                    "쿠션감이 좋고 오래 걸어도 발 부담이 적습니다.",
+                    "충격이 적고 오래 신어도 편안합니다.",
                 ],
             ),
             ReasonFactsForPrompt(
@@ -285,9 +675,14 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        with patch(
-            "app.services.shoe.shoe_fit_comment_service._get_llm",
-            return_value=llm,
+        with (
+            patch(
+                "app.services.shoe.shoe_fit_comment_service._get_llm",
+                return_value=llm,
+            ),
+            patch(
+                "app.services.shoe.shoe_fit_comment_service.logger.info"
+            ) as info,
         ):
             summary = await generate_shoe_summaries(
                 shoe_name="테스트 신발",
@@ -297,11 +692,18 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIn("한 사이즈 업을 고려할 만", summary.point_summary)
-        self.assertIn("발목은 비교적 안정적으로", summary.point_summary)
+        self.assertNotIn("발목을 안정적으로", summary.point_summary)
         self.assertNotIn("후기를 참고", summary.point_summary)
-        self.assertEqual(summary.forefoot_review_ids, [101, 102])
+        self.assertEqual(summary.forefoot_review_ids, [101])
         self.assertEqual(summary.heel_review_ids, [201, 202])
-        self.assertEqual(summary.insole_review_ids, [301, 302])
+        self.assertEqual(summary.insole_review_ids, [])
+        self.assertEqual(llm.ainvoke.await_count, 2)
+        self.assertTrue(
+            any(
+                call.args[-1] == "TYPED_EVIDENCE_FALLBACK"
+                for call in info.call_args_list
+            )
+        )
 
     async def test_ollama_concurrency_queue_timeout_fails_without_inference(self) -> None:
         unavailable = asyncio.Semaphore(0)
@@ -353,13 +755,14 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "app.services.shoe.shoe_fit_comment_service._get_llm",
             return_value=llm,
         ):
-            with self.assertRaisesRegex(ShoeFitCommentError, "outside"):
-                await generate_shoe_summaries(
-                    shoe_name="테스트 신발",
-                    fit_score=80.0,
-                    overall_risk_level="LOW",
-                    reasons=reasons,
-                )
+            summary = await generate_shoe_summaries(
+                shoe_name="테스트 신발",
+                fit_score=80.0,
+                overall_risk_level="LOW",
+                reasons=reasons,
+            )
+        self.assertEqual(summary.forefoot_review_ids, [101])
+        self.assertNotIn(999, summary.forefoot_review_ids)
 
     def test_legacy_duplicate_review_bodies_use_smallest_canonical_id(self) -> None:
         reasons = self._reasons()
@@ -433,10 +836,10 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(summary.forefoot_review_ids, [101])
-        self.assertEqual(summary.heel_review_ids, [201, 202])
-        self.assertEqual(summary.insole_review_ids, [301, 302, 303])
+        self.assertEqual(summary.heel_review_ids, [201])
+        self.assertEqual(summary.insole_review_ids, [302])
 
-    async def test_empty_llm_selection_uses_one_grounded_candidate(self) -> None:
+    async def test_empty_llm_selection_is_replaced_by_deterministic_selection(self) -> None:
         reasons = self._reasons()
         reasons[0] = ReasonFactsForPrompt(
             reason_type="FOREFOOT",
@@ -467,7 +870,7 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 reasons=reasons,
             )
 
-        self.assertEqual(summary.forefoot_review_ids, [101])
+        self.assertEqual(summary.forefoot_review_ids, [101, 102])
 
     async def test_reason_scope_excludes_style_and_body_but_point_scope_allows_style(self) -> None:
         reasons = [
@@ -524,10 +927,8 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(allowed, point_prompt)
         for forbidden in ("옆에", "가슴"):
             self.assertNotIn(forbidden, prompt)
-        self.assertEqual(
-            summary.point_summary,
-            "일부 착화에서는 통큰 바지 코디와 자연스럽게 어울렸습니다.",
-        )
+        self.assertIn("일관된 근거가 아직 부족", summary.point_summary)
+        self.assertNotIn("통큰 바지", summary.point_summary)
         self.assertNotIn("잘 맞는 신발", summary.point_summary)
         reason_summaries = " ".join(
             [summary.forefoot_summary, summary.heel_summary, summary.insole_summary]
@@ -536,7 +937,7 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(forbidden, reason_summaries)
         self.assertEqual(summary.forefoot_review_ids, [101])
         self.assertEqual(summary.heel_review_ids, [201])
-        self.assertEqual(summary.insole_review_ids, [301])
+        self.assertEqual(summary.insole_review_ids, [])
 
     async def test_ungrounded_swagger_style_claims_use_safe_product_fallback(self) -> None:
         reasons = [
@@ -561,7 +962,7 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 title="깔창 적합도 주의",
                 risk_level="HIGH",
                 review_ids=[301],
-                review_texts=["쿠션 때문인지 무게감이 있고 바닥이 얇게 느껴집니다."],
+                review_texts=["무게감이 있고 깔창이 얇게 느껴집니다."],
             ),
         ]
         llm = MagicMock()
@@ -591,11 +992,18 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(unsupported, summary.point_summary)
         self.assertNotIn("부위별 결과는", summary.point_summary)
         self.assertNotIn("ABC12345", summary.point_summary)
-        self.assertIn("무게감", summary.point_summary)
-        self.assertEqual(
-            summary.heel_summary,
-            "뒤꿈치 적합도 좋음. 발목을 안정적으로 잡아준다는 의견이 있습니다.",
+        self.assertIn("일관된 근거가 아직 부족", summary.point_summary)
+        self.assertNotIn("무게감", summary.point_summary)
+        expected = shoe_fit_comment_service.build_immediate_shoe_summaries(
+            shoe_name="테스트 신발 / ABC12345",
+            fit_score=55.33,
+            overall_risk_level="MEDIUM",
+            reasons=reasons,
         )
+        self.assertEqual(summary.forefoot_summary, expected.forefoot_summary)
+        self.assertEqual(summary.heel_summary, expected.heel_summary)
+        self.assertEqual(summary.insole_summary, expected.insole_summary)
+        llm.ainvoke.assert_awaited_once()
 
     async def test_grounded_product_description_is_preserved(self) -> None:
         reasons = [
@@ -605,7 +1013,7 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 risk_level="HIGH",
                 review_ids=[101, 102],
                 review_texts=[
-                    "발볼과 발등이 있는 경우 1업했습니다.",
+                    "발볼과 발등이 있는 경우 1업하니 편하게 잘 맞았습니다.",
                     "발볼과 발등이 있어서 1업했더니 잘 맞았습니다.",
                 ],
             ),
@@ -625,13 +1033,13 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 risk_level="HIGH",
                 review_ids=[301, 302],
                 review_texts=[
-                    "무게감이 있고 바닥이 얇게 느껴집니다.",
-                    "신발이 무겁고 바닥은 얇은 편입니다.",
+                    "무게감이 있고 깔창이 얇게 느껴집니다.",
+                    "신발이 무겁고 깔창은 얇은 편입니다.",
                 ],
             ),
         ]
         grounded_point = (
-            "발볼이나 발등이 있는 편이라면 한 사이즈 업을 고려할 만합니다. "
+            "발볼이 넓거나 발등이 높은 편이라면 한 사이즈 업을 고려할 만합니다. "
             "발목은 비교적 안정적으로 잡아주는 편입니다. "
             "바닥이 얇게 느껴질 수 있고, 착화 시 다소 무게감이 느껴지는 편입니다."
         )
@@ -640,13 +1048,13 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
             return_value=_Response(
                 '{"pointSummary":"' + grounded_point + '",'
                 '"pointSummaryClaims":['
-                '{"text":"발볼이나 발등이 있는 편이라면 한 사이즈 업을 고려할 만합니다","evidenceIds":["MUSINSA:SIZE_FIT:SIZE_OPTION:FULL_UP:POSITIVE"]},'
+                '{"text":"발볼이 넓거나 발등이 높은 편이라면 한 사이즈 업을 고려할 만합니다","evidenceIds":["MUSINSA:SIZE_FIT:SIZE_OPTION:FULL_UP:POSITIVE","MUSINSA:WIDTH_FIT:FOOT_CONDITION:WIDE_OR_HIGH_INSTEP:NEUTRAL"]},'
                 '{"text":"발목은 비교적 안정적으로 잡아주는 편입니다","evidenceIds":["MUSINSA:HEEL_FEEL:HEEL_HOLD:STABLE:POSITIVE"]},'
                 '{"text":"바닥이 얇게 느껴질 수 있고, 착화 시 다소 무게감이 느껴지는 편입니다","evidenceIds":["MUSINSA:CUSHION_FEEL:SOLE_THICKNESS:THIN:NEGATIVE","MUSINSA:WEIGHT_FEEL:WEIGHT:HEAVY:NEGATIVE"]}],'
                 '"forefootSummary":"발볼 적합도 주의. 사이즈를 확인해 주세요.",'
                 '"heelSummary":"뒤꿈치 적합도 좋음. 발목을 잡아준다는 의견이 있습니다.",'
                 '"insoleSummary":"깔창 적합도 주의. 바닥이 얇다는 의견이 있습니다.",'
-                '"forefootReviewIds":[101],"heelReviewIds":[201],'
+                '"forefootReviewIds":[102],"heelReviewIds":[201],'
                 '"insoleReviewIds":[301]}'
             )
         )
@@ -715,9 +1123,9 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("발볼과 깔창에 주의", summary.point_summary)
         self.assertNotIn("뒤꿈치는 적합도가 좋", summary.point_summary)
-        self.assertIn("일부 착화", summary.point_summary)
-        self.assertIn("바닥이 얇", summary.point_summary)
-        self.assertIn("무게감", summary.point_summary)
+        self.assertIn("일관된 근거가 아직 부족", summary.point_summary)
+        self.assertNotIn("바닥이 얇", summary.point_summary)
+        self.assertNotIn("무게감", summary.point_summary)
         for report_style in ("후기를 참고", "확인하는 것이 좋", "한편"):
             self.assertNotIn(report_style, summary.point_summary)
 
@@ -744,6 +1152,7 @@ class ShoeOllamaRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     }
                 ),
             ),
+            patch.object(main.settings, "ollama_prewarm_on_startup", False),
             patch("app.main.logger.info") as log,
         ):
             await main.log_ai_runtime_preflight()

@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import os
-import signal
+import argparse
+import shutil
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
-
-from dotenv import load_dotenv
-from pyngrok import ngrok
-from pyngrok.conf import PyngrokConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,29 +19,42 @@ def _is_port_open(host: str, port: int) -> bool:
         return sock.connect_ex((host, port)) == 0
 
 
-def _get_env_int(name: str, default: int) -> int:
-    raw_value = os.getenv(name)
-    if not raw_value:
-        return default
+def _port(value: str) -> int:
     try:
-        return int(raw_value)
+        port = int(value)
     except ValueError as exc:
-        raise RuntimeError(f"{name} must be an integer, got: {raw_value!r}") from exc
+        raise argparse.ArgumentTypeError(f"port must be an integer: {value!r}") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+def _wait_for_port(host: str, port: int, process: subprocess.Popen, timeout: float = 30.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"FastAPI exited before opening port {port} (exit={process.returncode})")
+        if _is_port_open(host, port):
+            return
+        time.sleep(0.25)
+    raise RuntimeError(f"FastAPI did not open port {port} within {timeout:.0f} seconds")
 
 
 def main() -> int:
-    load_dotenv(PROJECT_ROOT / ".env")
-
-    authtoken = os.getenv("NGROK_AUTHTOKEN")
-    if not authtoken:
-        raise RuntimeError("Set NGROK_AUTHTOKEN in .env before running this script.")
-
-    port = _get_env_int("NGROK_PORT", 8000)
-    domain = os.getenv("NGROK_DOMAIN") or None
-    ngrok_path = Path(sys.executable).resolve().parent / "ngrok.exe"
-
-    pyngrok_config = PyngrokConfig(ngrok_path=str(ngrok_path))
-    ngrok.set_auth_token(authtoken, pyngrok_config=pyngrok_config)
+    parser = argparse.ArgumentParser(
+        description="Start the FeetFit FastAPI service and expose it through the configured ngrok CLI."
+    )
+    parser.add_argument(
+        "--port",
+        type=_port,
+        default=_port(os.getenv("NGROK_PORT", "8000")),
+        help="local FastAPI/ngrok port (default: NGROK_PORT or 8000)",
+    )
+    args = parser.parse_args()
+    port = args.port
+    ngrok_executable = shutil.which("ngrok")
+    if not ngrok_executable:
+        parser.error("ngrok CLI was not found on PATH; install it and run 'ngrok config add-authtoken <TOKEN>'")
 
     server = None
     started_server = False
@@ -66,41 +76,30 @@ def main() -> int:
         )
         started_server = True
 
-    tunnel = None
+    tunnel_process = None
     try:
         if server is not None:
-            time.sleep(2)
-            if server.poll() is not None:
-                return server.returncode or 1
-
-        connect_kwargs = {"addr": port, "proto": "http"}
-        if domain:
-            connect_kwargs["domain"] = domain
-        tunnel = ngrok.connect(**connect_kwargs, pyngrok_config=pyngrok_config)
+            _wait_for_port("127.0.0.1", port, server)
 
         print()
-        print("FastAPI server is running.")
+        print("FastAPI server is ready. Starting ngrok...")
         print(f"Local docs:  http://127.0.0.1:{port}/docs")
-        print(f"ngrok URL:   {tunnel.public_url}")
-        print(f"ngrok docs:  {tunnel.public_url}/docs")
+        print("Use the HTTPS Forwarding URL printed by ngrok. Press Ctrl+C to stop.")
         print()
-        print("Press Ctrl+C to stop the server and tunnel.")
-
-        if server is not None:
-            server.wait()
-            return server.returncode or 0
-
-        while True:
-            time.sleep(3600)
+        tunnel_process = subprocess.Popen([ngrok_executable, "http", str(port)])
+        return tunnel_process.wait()
     except KeyboardInterrupt:
         print("\nStopping server and ngrok tunnel...")
         return 0
     finally:
-        if tunnel is not None:
-            ngrok.disconnect(tunnel.public_url)
-        ngrok.kill()
+        if tunnel_process is not None and tunnel_process.poll() is None:
+            tunnel_process.terminate()
+            try:
+                tunnel_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                tunnel_process.kill()
         if started_server and server is not None and server.poll() is None:
-            server.send_signal(signal.SIGTERM)
+            server.terminate()
             try:
                 server.wait(timeout=10)
             except subprocess.TimeoutExpired:

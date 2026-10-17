@@ -18,9 +18,9 @@ class Settings(BaseSettings):
     app_name: str = "Feetfit AI 무좀 분석 API"
     app_version: str = "0.1.0"
     weights_dir: Path = Field(default=PROJECT_ROOT / "weights")
-    sam_source_dir: Path = Field(default=Path(r"D:\tinea pedis\sam\segment-anything"))
-    tinea_report_endpoint: str = "http://35.94.253.151/api/reports/tina-pedis"
-    hallux_valgus_report_endpoint: str = "http://35.94.253.151/api/reports/hallux-valgus"
+    sam_source_dir: Path = Field(default=PROJECT_ROOT.parent / "segment-anything")
+    tinea_report_endpoint: str = "http://127.0.0.1:8080/api/reports/tina-pedis"
+    hallux_valgus_report_endpoint: str = "http://127.0.0.1:8080/api/reports/hallux-valgus"
     shoe_recommendation_endpoint: str = Field(
         default="http://127.0.0.1:8080/api/shoes/recommendations",
         validation_alias=AliasChoices(
@@ -68,6 +68,22 @@ class Settings(BaseSettings):
             "INTERNAL_API_KEY",
         ),
     )
+    feetfit_server_base_url: str = Field(
+        default="http://127.0.0.1:8080",
+        validation_alias=AliasChoices(
+            "FEETFIT_SERVER_BASE_URL",
+            "SHOE_INGESTION_SERVER_BASE_URL",
+        ),
+    )
+    shoe_ingestion_enabled: bool = False
+    shoe_ingestion_admin_api_key: str = Field(default="", repr=False)
+    shoe_ingestion_target_label: str = "production"
+    shoe_ingestion_crawler_root: Path = Field(
+        default=PROJECT_ROOT.parent / "shoe_crawler"
+    )
+    shoe_ingestion_artifact_root: Path = Field(
+        default=PROJECT_ROOT / "artifacts" / "shoe-ingestion-jobs"
+    )
     report_proxy_timeout_seconds: float = Field(default=60.0, gt=0, le=3600)
     feetfit_server_callback_timeout_seconds: float = Field(default=900.0, ge=900.0)
 
@@ -86,6 +102,7 @@ class Settings(BaseSettings):
     shoe_db_password: str = ""
 
     shoe_embedding_model_name: str = "BAAI/bge-m3"
+    shoe_embedding_local_files_only: bool = True
     shoe_embedding_device: str = "auto"
     shoe_review_embedding_cache_path: Path = Field(default=PROJECT_ROOT / ".cache" / "shoe_review_embeddings.npz")
     shoe_release_embedding_model_after_batch: bool = True
@@ -143,6 +160,18 @@ class Settings(BaseSettings):
     ollama_cpu_fallback_enabled: bool = True
     ollama_max_concurrency: int = Field(default=1, ge=1, le=4)
     ollama_queue_timeout_seconds: float = Field(default=5.0, gt=0, le=120)
+    # Direct detail generation has a short, end-to-end Server budget.  Ollama's
+    # ordinary request timeout remains longer for legacy background refinement.
+    ollama_direct_summary_deadline_seconds: float = Field(
+        default=8.5, gt=0, le=30
+    )
+    # Keep a successfully loaded model resident long enough for typical detail
+    # browsing.  This does not eagerly allocate VRAM at process startup.
+    ollama_keep_alive: str = "30m"
+    # Optional startup prewarm is deliberately off: BGE-M3 and a 7B Ollama
+    # model can exceed an 8 GB GPU together. Deployments may enable it only
+    # when recommendation-batch GPU scheduling is controlled externally.
+    ollama_prewarm_on_startup: bool = False
 
     max_upload_size_bytes: int = 10 * 1024 * 1024
     combined_image_max_height: int = 1600
@@ -178,11 +207,9 @@ class Settings(BaseSettings):
     photo_cutout_background: bool = True
     photo_cutout_padding: int = 28
 
-    hallux_model_source_dir: Path = Field(default=Path(r"D:\Hallux valgus"))
+    hallux_model_source_dir: Path = Field(default=PROJECT_ROOT.parent / "hallux-model")
     hallux_landmark_weights: Path = Field(
-        default=Path(
-            r"D:\Hallux valgus\runs\real_foot_landmark_swin\teacher_student_top2_angle_from_swin\weights\best_top2_angle.pt"
-        )
+        default=PROJECT_ROOT.parent / "hallux-model" / "weights" / "best_top2_angle.pt"
     )
     hallux_img_size: int = 384
     hallux_seg_conf: float = 0.25
@@ -193,7 +220,7 @@ class Settings(BaseSettings):
     # Single-photo ArUco measurement pipeline.  The implementation is loaded
     # from the separately cloned calibration repository so its validated
     # geometry code and camera assets stay the single source of truth.
-    aruco_source_dir: Path = Field(default=Path(r"D:\ArUco-marker-code"))
+    aruco_source_dir: Path = Field(default=PROJECT_ROOT.parent / "ArUco-marker-code")
     aruco_camera_calibration: Path | None = None
     aruco_foot_segmentation_weights: Path | None = None
     aruco_dictionary: str = "DICT_4X4_50"

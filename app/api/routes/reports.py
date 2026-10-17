@@ -593,8 +593,10 @@ async def create_foot_type_text_report(
         "MUSINSA 리뷰, RunRepeat 원본 실측 context를 페이지 끝까지 조회합니다. 사용자 발 측정값과 RunRepeat "
         "실측값의 TEMPORARY_HEURISTIC(NOT_CLINICALLY_VALIDATED) 정책으로 모든 신발의 fitScore와 "
         "FOREFOOT/HEEL/INSOLE risk를 계산하고, BGE-M3로 해당 신발의 MUSINSA 리뷰만 선별합니다. "
-        "계산 결과는 pointSummary/reviewSummary가 null인 생성 대기 상태로 배치 저장 API에 "
-        "전달됩니다. 내부 조회 실패 시 shared DB로 우회하지 않습니다. "
+        "계산 결과와 함께 MUSINSA 리뷰의 검증된 근거로 pointSummary를 만들고, 현재 세션의 "
+        "발 압력·발 치수·발 환경 및 신발 적합도 근거로 부위별 reviewSummary도 즉시 생성해 "
+        "한 번에 저장합니다. 따라서 상세 조회는 별도 Ollama 생성을 기다리지 않습니다. "
+        "내부 조회 실패 시 shared DB로 우회하지 않습니다. "
         "상단 Authorize 버튼에서 Bearer 토큰을 먼저 입력하세요."
     ),
     responses={
@@ -645,11 +647,13 @@ async def create_shoe_recommendations_report(
             ShoeRecommendationItemPayload(
                 shoe_id=item.shoe_id,
                 fit_score=item.fit_score,
+                point_summary=item.point_summary,
                 reasons=[
                     ShoeRecommendationReasonPayload(
                         reason_type=reason.reason_type,
                         title=reason.title,
                         risk_level=reason.risk_level,
+                        review_summary=reason.review_summary,
                         review_ids=reason.review_ids,
                     )
                     for reason in item.reasons

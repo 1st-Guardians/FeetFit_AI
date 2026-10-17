@@ -234,7 +234,40 @@ class ShoeRecommendationContextTests(unittest.TestCase):
         )
         for reason in batch.items[0].reasons:
             self.assertEqual(reason.risk_level, risk_level_from_score(reason.score))
-            self.assertEqual(reason.review_ids, [1010])
+            # The only fixture review mixes all three functional areas. Because
+            # Server persists only review IDs and later exposes the full body,
+            # it must not be attached to any single reason card.
+            self.assertEqual(reason.review_ids, [])
+            self.assertTrue(reason.review_summary)
+            self.assertNotIn("정량 분석 기준", reason.review_summary)
+
+    def test_batch_precomputes_evidence_backed_point_summary_without_ollama(self) -> None:
+        raw = _context_dict()
+        raw["shoes"][0]["reviews"] = [
+            {
+                "reviewId": 5001,
+                "rating": 5.0,
+                "reviewText": "발볼러는 사이즈를 업해서 신는 게 잘 맞아요.",
+                "source": "MUSINSA",
+                "collectedAt": None,
+            },
+            {
+                "reviewId": 5002,
+                "rating": 5.0,
+                "reviewText": "발볼 있으면 사이즈 업해야 편합니다.",
+                "source": "MUSINSA",
+                "collectedAt": None,
+            },
+        ]
+        raw["shoes"][0]["reviewCount"] = 2
+        context = ServerRecommendationContext.model_validate(raw)
+        patches = _embedding_patches()
+
+        with patches[0], patches[1], patches[2]:
+            batch = compute_shoe_recommendations(context)
+
+        self.assertIsNotNone(batch.items[0].point_summary)
+        self.assertIn("사이즈 업을 고려", batch.items[0].point_summary)
 
     def test_reviews_do_not_change_quantitative_fit_or_risk(self) -> None:
         positive = _context()
@@ -264,6 +297,14 @@ class ShoeRecommendationContextTests(unittest.TestCase):
         self.assertTrue(
             all(not reason.review_ids for item in batch.items for reason in item.reasons)
         )
+        self.assertTrue(all(item.point_summary for item in batch.items))
+        self.assertTrue(
+            all(
+                reason.review_summary
+                for item in batch.items
+                for reason in item.reasons
+            )
+        )
         embed_texts.assert_not_called()
 
     def test_full_338_shoe_contract_preserves_coverage_order_and_three_reasons(self) -> None:
@@ -291,6 +332,8 @@ class ShoeRecommendationContextTests(unittest.TestCase):
         )
         reviewless = next(item for item in batch.items if item.shoe_id == 1)
         self.assertTrue(all(reason.review_ids == [] for reason in reviewless.reasons))
+        self.assertTrue(reviewless.point_summary)
+        self.assertTrue(all(reason.review_summary for reason in reviewless.reasons))
 
     def test_semantically_unrelated_reviews_are_not_force_filled(self) -> None:
         context = _context()
@@ -323,12 +366,14 @@ class ShoeRecommendationContextTests(unittest.TestCase):
 
         self.assertIn("넓고 편안", queries["FOREFOOT"])
         self.assertIn("좁아 아프", queries["FOREFOOT"])
-        self.assertIn("안정적으로", queries["HEEL"])
-        self.assertIn("벗겨지고", queries["HEEL"])
-        self.assertIn("통풍이 좋", queries["INSOLE"])
-        self.assertIn("답답하며", queries["INSOLE"])
+        self.assertIn("쿠션감", queries["HEEL"])
+        self.assertIn("바닥 충격", queries["HEEL"])
+        self.assertIn("장시간 착용", queries["HEEL"])
+        self.assertIn("고정감으로 해석하지 않는다", queries["HEEL"])
+        self.assertIn("통풍", queries["INSOLE"])
+        self.assertIn("열감", queries["INSOLE"])
 
-    def test_relevant_negative_wear_review_can_be_selected_as_evidence(self) -> None:
+    def test_cross_domain_review_is_not_selected_for_any_reason(self) -> None:
         raw = _context_dict()
         raw["shoes"][0]["reviews"] = [
             {
@@ -369,9 +414,7 @@ class ShoeRecommendationContextTests(unittest.TestCase):
         ):
             batch = compute_shoe_recommendations(context)
 
-        self.assertTrue(
-            all(reason.review_ids == [5002] for reason in batch.items[0].reasons)
-        )
+        self.assertTrue(all(not reason.review_ids for reason in batch.items[0].reasons))
 
     def test_semantic_ranking_sees_relevant_review_after_legacy_leading_cutoff(self) -> None:
         raw = _context_dict()
@@ -382,7 +425,7 @@ class ShoeRecommendationContextTests(unittest.TestCase):
                 "reviewText": (
                     "일반적인 착화 후기입니다."
                     if index < 120
-                    else "발볼과 뒤꿈치와 깔창 적합성을 자세히 설명한 관련 후기입니다."
+                    else "발볼이 넉넉하고 앞코가 여유로워 편한 후기입니다."
                 ),
                 "source": "MUSINSA",
                 "collectedAt": None,
@@ -410,9 +453,10 @@ class ShoeRecommendationContextTests(unittest.TestCase):
         ):
             batch = compute_shoe_recommendations(context)
 
-        self.assertTrue(
-            all(reason.review_ids == [20_120] for reason in batch.items[0].reasons)
-        )
+        reasons = {reason.reason_type: reason for reason in batch.items[0].reasons}
+        self.assertEqual(reasons["FOREFOOT"].review_ids, [20_120])
+        self.assertEqual(reasons["HEEL"].review_ids, [])
+        self.assertEqual(reasons["INSOLE"].review_ids, [])
 
     def test_duplicate_review_bodies_with_distinct_ids_are_selected_once(self) -> None:
         raw = _context_dict()
@@ -420,21 +464,21 @@ class ShoeRecommendationContextTests(unittest.TestCase):
             {
                 "reviewId": 5002,
                 "rating": 5.0,
-                "reviewText": "발볼이  편하고 뒤꿈치가 안정적이에요.\n쿠션이 좋아요.",
+                "reviewText": "발볼이 넉넉하고 앞코가 여유로워 편해요.",
                 "source": "MUSINSA",
                 "collectedAt": None,
             },
             {
                 "reviewId": 5001,
                 "rating": 5.0,
-                "reviewText": "\u200b발볼이 편하고 뒤꿈치가 안정적이에요. 쿠션이 좋아요.",
+                "reviewText": "\u200b발볼이 넉넉하고 앞코가 여유로워 편해요.",
                 "source": "MUSINSA",
                 "collectedAt": None,
             },
             {
                 "reviewId": 5003,
                 "rating": 4.0,
-                "reviewText": "앞코가 여유롭고 발목이 편해요. 깔창도 푹신해요.",
+                "reviewText": "앞코가 여유롭고 발볼도 넉넉해 편해요.",
                 "source": "MUSINSA",
                 "collectedAt": None,
             },
@@ -446,9 +490,10 @@ class ShoeRecommendationContextTests(unittest.TestCase):
         with patches[0], patches[1], patches[2]:
             batch = compute_shoe_recommendations(context)
 
-        self.assertTrue(
-            all(reason.review_ids == [5001, 5003] for reason in batch.items[0].reasons)
-        )
+        reasons = {reason.reason_type: reason for reason in batch.items[0].reasons}
+        self.assertEqual(reasons["FOREFOOT"].review_ids, [5001, 5003])
+        self.assertEqual(reasons["HEEL"].review_ids, [])
+        self.assertEqual(reasons["INSOLE"].review_ids, [])
 
     def test_wider_lab_shoe_scores_better_for_wide_user(self) -> None:
         raw = _context_dict()
@@ -549,7 +594,7 @@ class ShoeRecommendationContextTests(unittest.TestCase):
         context = _context()
         with (
             patch.object(settings, "shoe_risk_low_min_score", 90.0),
-            patch.object(settings, "shoe_risk_medium_min_score", 80.0),
+            patch.object(settings, "shoe_risk_medium_min_score", 85.0),
         ):
             areas = score_shoe_fit(context.shoes[0], context.foot_state)
         insole = next(area for area in areas if area.reason_type == "INSOLE")
@@ -557,7 +602,7 @@ class ShoeRecommendationContextTests(unittest.TestCase):
         self.assertEqual(insole.title, "깔창 적합도 주의")
         self.assertNotIn("통기성 부족", insole.title)
 
-    def test_missing_characteristic_is_not_synthesized_and_area_is_reweighted(self) -> None:
+    def test_missing_required_insole_characteristic_fails_closed(self) -> None:
         raw = _context_dict()
         metrics = raw["shoes"][0]["labMeasurements"][0]["rawMetrics"]
         raw["shoes"][0]["labMeasurements"][0]["rawMetrics"] = [
@@ -566,9 +611,68 @@ class ShoeRecommendationContextTests(unittest.TestCase):
         context = ServerRecommendationContext.model_validate(raw)
         patches = _embedding_patches()
         with patches[0], patches[1], patches[2]:
-            batch = compute_shoe_recommendations(context)
-        self.assertEqual(len(batch.items[0].reasons), 3)
-        self.assertTrue(0 <= batch.items[0].fit_score <= 100)
+            with self.assertRaisesRegex(ShoeRecommendationError, "No usable RunRepeat"):
+                compute_shoe_recommendations(context)
+
+    def test_quantitative_preflight_rejects_one_slipped_shoe_before_embedding(self) -> None:
+        raw = _context_dict()
+        invalid = _shoe(334)
+        invalid["brandName"] = "아디다스"
+        invalid["shoeName"] = "테렉스 아그라빅 SL"
+        invalid["modelCode"] = "KH8801"
+        invalid_metrics = invalid["labMeasurements"][0]["rawMetrics"]
+        invalid["labMeasurements"][0]["rawMetrics"] = [
+            metric
+            for metric in invalid_metrics
+            if metric["canonicalCharacteristic"] != "BREATHABILITY"
+        ]
+        raw["shoes"] = [_shoe(101), invalid, _shoe(102)]
+        context = ServerRecommendationContext.model_validate(raw)
+
+        with (
+            patch("app.services.shoe.shoe_recommendation.embed_texts") as embed_texts,
+            self.assertLogs(
+                "app.services.shoe.shoe_recommendation", level="WARNING"
+            ) as logs,
+        ):
+            with self.assertRaises(ShoeRecommendationError) as raised:
+                compute_shoe_recommendations(context)
+
+        message = str(raised.exception)
+        self.assertIn("refusing to forward a partial batch", message)
+        self.assertIn("shoeId=334", message)
+        self.assertIn("modelCode='KH8801'", message)
+        self.assertIn("shoeName='테렉스 아그라빅 SL'", message)
+        self.assertIn("missingDomains=INSOLE", message)
+        self.assertIn("catalogCount=3 eligibleCount=2 invalidCount=1", message)
+        self.assertTrue(any("invalidCount=1" in entry for entry in logs.output))
+        embed_texts.assert_not_called()
+
+    def test_quantitative_preflight_reports_all_invalid_shoes_before_embedding(self) -> None:
+        raw = _context_dict()
+        first = _shoe(201)
+        first["labMeasurements"] = []
+        second = _shoe(202)
+        second_metrics = second["labMeasurements"][0]["rawMetrics"]
+        second["labMeasurements"][0]["rawMetrics"] = [
+            metric
+            for metric in second_metrics
+            if metric["canonicalCharacteristic"] != "BREATHABILITY"
+        ]
+        raw["shoes"] = [first, second]
+        context = ServerRecommendationContext.model_validate(raw)
+
+        with patch("app.services.shoe.shoe_recommendation.embed_texts") as embed_texts:
+            with self.assertRaises(ShoeRecommendationError) as raised:
+                compute_shoe_recommendations(context)
+
+        message = str(raised.exception)
+        self.assertIn("catalogCount=2 eligibleCount=0 invalidCount=2", message)
+        self.assertIn("shoeId=201", message)
+        self.assertIn("missingDomains=FOREFOOT,HEEL,INSOLE", message)
+        self.assertIn("shoeId=202", message)
+        self.assertIn("missingDomains=INSOLE", message)
+        embed_texts.assert_not_called()
 
     def test_missing_runrepeat_measurement_fails_closed(self) -> None:
         context = _context()

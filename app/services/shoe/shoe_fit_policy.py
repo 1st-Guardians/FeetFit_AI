@@ -12,16 +12,21 @@ from app.schemas.shoe_server import (
     ServerUserFootState,
 )
 from app.services.shoe.shoe_feature_rules import default_title
+from app.services.shoe.recommendation_policy_version import RecommendationPolicyVersion
 
 
 POLICY_CLASSIFICATION = "TEMPORARY_HEURISTIC"
 CLINICAL_VALIDATION_STATUS = "NOT_CLINICALLY_VALIDATED"
-POLICY_VERSION = "phase-d-v1"
+# Historical implementation revision, not the product-level V2 policy.
+POLICY_VERSION = "phase-d-v2-domain-map"
+RECOMMENDATION_POLICY_VERSION = RecommendationPolicyVersion.V1
 REASON_TYPES = ("FOREFOOT", "HEEL", "INSOLE")
 
 
 class ShoeFitPolicyError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, reason_type: str | None = None) -> None:
+        super().__init__(message)
+        self.reason_type = reason_type
 
 
 @dataclass(frozen=True)
@@ -56,19 +61,25 @@ def risk_level_from_score(score: float) -> str:
     return "HIGH"
 
 
-def _weighted_score(components: Iterable[ComponentScore]) -> float:
+def _weighted_score(
+    components: Iterable[ComponentScore],
+    *,
+    reason_type: str,
+) -> float:
     present = tuple(components)
     total_weight = sum(component.weight for component in present)
     if total_weight <= 0:
         raise ShoeFitPolicyError(
-            "No usable RunRepeat component exists for a required fit area; refusing to synthesize a score."
+            "No usable RunRepeat component exists for required fit area "
+            f"reasonType={reason_type}; refusing to synthesize a score.",
+            reason_type=reason_type,
         )
     return sum(component.score * component.weight for component in present) / total_weight
 
 
 def _area(reason_type: str, components: Iterable[ComponentScore]) -> AreaScore:
     present = tuple(components)
-    score = round(_weighted_score(present), 2)
+    score = round(_weighted_score(present, reason_type=reason_type), 2)
     risk = risk_level_from_score(score)
     return AreaScore(
         reason_type=reason_type,
@@ -218,9 +229,21 @@ def _user_factors(state: ServerUserFootState) -> dict[str, float | None]:
         ),
     )
 
-    pressure_imbalance = None
+    pressure_imbalance_candidates: list[float] = []
     if daily and daily.left_pressure_percent is not None and daily.right_pressure_percent is not None:
-        pressure_imbalance = abs(daily.left_pressure_percent - daily.right_pressure_percent)
+        pressure_imbalance_candidates.append(
+            abs(daily.left_pressure_percent - daily.right_pressure_percent)
+        )
+    pressure_imbalance_candidates.extend(
+        abs(row.left_pressure_ratio - row.right_pressure_ratio)
+        for row in state.static_pressure_analyses
+        if row.left_pressure_ratio is not None and row.right_pressure_ratio is not None
+    )
+    pressure_imbalance = (
+        max(pressure_imbalance_candidates)
+        if pressure_imbalance_candidates
+        else None
+    )
     daily_balance = daily.balance_score if daily else None
     static_balance = _average(row.balance_score for row in state.static_pressure_analyses)
     balance = min(
@@ -273,7 +296,7 @@ def _user_factors(state: ServerUserFootState) -> dict[str, float | None]:
         "width_need": width_need,
         "heel_need": heel_need,
         "skin_sensitivity": skin_sensitivity,
-        "breathability_need": max(humidity_need, fungal_need),
+        "breathability_need": max(humidity_need, fungal_need, skin_sensitivity),
         # Pressure/balance belongs to HEEL. INSOLE personalization is driven
         # by humidity/fungal evidence; keeping these independent prevents one
         # measurement signal from silently changing multiple UI areas.
@@ -286,44 +309,16 @@ def _forefoot_score(
 ) -> AreaScore:
     components: list[ComponentScore] = []
     width_need = float(factors["width_need"] or 0.0)
-    foot_length = factors["foot_length"]
-    foot_width = factors["foot_width"]
-    if (
-        measurement.width_mm is not None
-        and measurement.internal_length_mm not in {None, 0.0}
-        and foot_length is not None
-        and foot_width is not None
-    ):
-        scaled_internal_width = measurement.width_mm * foot_length / measurement.internal_length_mm
-        actual_allowance = scaled_internal_width - foot_width
-        desired = (
-            settings.shoe_forefoot_width_allowance_mm
-            + width_need * settings.shoe_forefoot_width_extra_allowance_mm
-        )
-        shortfall = max(0.0, desired - actual_allowance)
-        excess = max(0.0, actual_allowance - desired - settings.shoe_forefoot_width_excess_free_mm)
-        score = 100.0 - (
-            shortfall * settings.shoe_forefoot_width_shortfall_penalty_per_mm
-            + excess * settings.shoe_forefoot_width_excess_penalty_per_mm
-        )
+    width = _metric(measurement, "WIDTH_SPACE")
+    if width is not None:
+        target = 0.5 + 0.45 * width_need
         components.append(
             ComponentScore(
-                "WIDTH_ALLOWANCE",
-                _clamp(score, 0, 100),
+                "WIDTH_SPACE",
+                _target_score(_percentile(width), target),
                 settings.shoe_forefoot_width_component_weight,
             )
         )
-    else:
-        width = _metric(measurement, "WIDTH_SPACE")
-        if width is not None:
-            target = 0.5 + 0.45 * width_need
-            components.append(
-                ComponentScore(
-                    "WIDTH_SPACE",
-                    _target_score(_percentile(width), target),
-                    settings.shoe_forefoot_width_component_weight,
-                )
-            )
 
     toebox = _metric(measurement, "TOEBOX_SPACE", variant="width")
     if toebox is None:
@@ -345,21 +340,8 @@ def _heel_score(
 ) -> AreaScore:
     components: list[ComponentScore] = []
     heel_need = float(factors["heel_need"] or 0.0)
-    skin_sensitivity = float(factors["skin_sensitivity"] or 0.0)
     cushion_need = float(factors["cushion_need"] or 0.0)
 
-    heel_hold = _metric(measurement, "HEEL_HOLD", location="HEEL") or _metric(
-        measurement, "HEEL_HOLD"
-    )
-    if heel_hold is not None:
-        target = _clamp(0.5 + 0.4 * heel_need - 0.2 * skin_sensitivity)
-        components.append(
-            ComponentScore(
-                "HEEL_HOLD",
-                _target_score(_percentile(heel_hold), target),
-                settings.shoe_heel_hold_component_weight,
-            )
-        )
     shock = _metric(measurement, "SHOCK_ABSORPTION", location="HEEL") or _metric(
         measurement, "SHOCK_ABSORPTION"
     )
@@ -404,10 +386,6 @@ def _insole_score(
 ) -> AreaScore:
     components: list[ComponentScore] = []
     breathability_need = float(factors["breathability_need"] or 0.0)
-    # Cushion and shock remain quantitative shoe characteristics, but there is
-    # currently no validated session measurement that personalizes their
-    # target. Keep the neutral target until such a signal is explicitly added.
-    cushion_need = 0.0
 
     breathability = _metric(measurement, "BREATHABILITY")
     if breathability is not None:
@@ -418,31 +396,6 @@ def _insole_score(
                     _percentile(breathability), 0.5 + 0.45 * breathability_need
                 ),
                 settings.shoe_insole_breathability_component_weight,
-            )
-        )
-    cushion = _metric(measurement, "CUSHION", variant="primary") or _metric(
-        measurement, "CUSHION"
-    )
-    if cushion is not None:
-        components.append(
-            ComponentScore(
-                "CUSHION",
-                _target_score(
-                    _percentile(cushion, higher_is_better=False),
-                    0.5 + 0.4 * cushion_need,
-                ),
-                settings.shoe_insole_cushion_component_weight,
-            )
-        )
-    shock = _metric(measurement, "SHOCK_ABSORPTION", location="FOREFOOT") or _metric(
-        measurement, "SHOCK_ABSORPTION", location="HEEL"
-    ) or _metric(measurement, "SHOCK_ABSORPTION")
-    if shock is not None:
-        components.append(
-            ComponentScore(
-                "SHOCK_ABSORPTION",
-                _target_score(_percentile(shock), 0.5 + 0.45 * cushion_need),
-                settings.shoe_insole_shock_component_weight,
             )
         )
     return _area("INSOLE", components)

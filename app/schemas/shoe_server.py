@@ -216,6 +216,77 @@ class ServerSavedReason(BaseModel):
     reviews: list[ServerEvidenceReview] = Field(max_length=3)
 
 
+class ServerSummaryStaticPressureEvidence(BaseModel):
+    """Minimal pressure evidence optionally returned with a saved recommendation."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    foot_side: Literal["LEFT", "RIGHT"] = Field(alias="footSide")
+    left_pressure_ratio: float | None = Field(
+        default=None, alias="leftPressureRatio", ge=0, le=100
+    )
+    right_pressure_ratio: float | None = Field(
+        default=None, alias="rightPressureRatio", ge=0, le=100
+    )
+    forefoot_pressure_ratio: float | None = Field(
+        default=None, alias="forefootPressureRatio", ge=0, le=100
+    )
+    rearfoot_pressure_ratio: float | None = Field(
+        default=None, alias="rearfootPressureRatio", ge=0, le=100
+    )
+    balance_score: float | None = Field(
+        default=None, alias="balanceScore", ge=0, le=100
+    )
+
+
+class ServerPersonalFitEvidence(BaseModel):
+    """Optional, bounded measurement facts for first-view summary copy.
+
+    Older Feetfit_Server deployments omit this object.  Every scalar is also
+    optional so a missing sensor result cannot be mistaken for a neutral result.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    balance_score: float | None = Field(default=None, alias="balanceScore", ge=0, le=100)
+    left_pressure_percent: float | None = Field(
+        default=None, alias="leftPressurePercent", ge=0, le=100
+    )
+    right_pressure_percent: float | None = Field(
+        default=None, alias="rightPressurePercent", ge=0, le=100
+    )
+    measured_left_foot_size_mm: float | None = Field(
+        default=None, alias="measuredLeftFootSizeMm", gt=0
+    )
+    measured_right_foot_size_mm: float | None = Field(
+        default=None, alias="measuredRightFootSizeMm", gt=0
+    )
+    left_foot_width_mm: float | None = Field(
+        default=None, alias="leftFootWidthMm", gt=0
+    )
+    right_foot_width_mm: float | None = Field(
+        default=None, alias="rightFootWidthMm", gt=0
+    )
+    avg_humidity_percent: float | None = Field(
+        default=None, alias="avgHumidityPercent", ge=0, le=100
+    )
+    fungal_suspicion_safety_score: int | None = Field(
+        default=None, alias="fungalSuspicionSafetyScore", ge=0, le=100
+    )
+    skin_reaction_safety_score: int | None = Field(
+        default=None, alias="skinReactionSafetyScore", ge=0, le=100
+    )
+    left_toe_angle_degree: float | None = Field(
+        default=None, alias="leftToeAngleDegree", ge=0
+    )
+    right_toe_angle_degree: float | None = Field(
+        default=None, alias="rightToeAngleDegree", ge=0
+    )
+    static_pressure_analyses: list[ServerSummaryStaticPressureEvidence] = Field(
+        default_factory=list, alias="staticPressureAnalyses"
+    )
+
+
 class ServerSavedRecommendation(BaseModel):
     """Ollama 문장 생성에 필요한, 이미 계산·저장된 사실만 담는 Server 응답."""
 
@@ -228,6 +299,9 @@ class ServerSavedRecommendation(BaseModel):
     shoe_name: str = Field(alias="shoeName")
     fit_score: float = Field(alias="fitScore")
     point_summary: str | None = Field(default=None, alias="pointSummary")
+    personal_fit_evidence: ServerPersonalFitEvidence | None = Field(
+        default=None, alias="personalFitEvidence"
+    )
     analyzed_at: datetime = Field(alias="analyzedAt")
     reasons: list[ServerSavedReason] = Field(min_length=3, max_length=3)
 
