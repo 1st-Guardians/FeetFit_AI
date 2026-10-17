@@ -146,6 +146,7 @@ class MeasurementFailureNotifierTests(unittest.IsolatedAsyncioTestCase):
             "USER_CANCELLED",
             "REPORT_SAVE_ERROR",
             "INVALID_CAPTURE_DATA",
+            "INVALID_PRESSURE_DATA",
             "DEVICE_DISCONNECTED",
             "TOKEN_EXPIRED",
             "UNKNOWN",
@@ -215,29 +216,14 @@ class MeasurementFailureNotifierTests(unittest.IsolatedAsyncioTestCase):
             {
                 "status": "FAILED",
                 "failureReason": "AI_SERVER_ERROR",
-                "failureDetail": (
-                    "pipeline=full-photo-analysis-v1; stage=gpt-report-text; "
-                    "errorType=FullPhotoOutputValidationError; requestId=request-123"
-                ),
+                "failureDetail": "AI 분석에 실패했습니다.",
             },
         )
 
-    async def test_gpt_failure_codes_forward_exact_frontend_detail(self) -> None:
+    async def test_gpt_failure_codes_forward_short_frontend_detail(self) -> None:
         cases = {
-            "GPT_REPORT_RESPONSE_INVALID": (
-                "사진 분석 결과 문구 생성 단계에서 응답 형식 검증에 실패했습니다. "
-                "잠시 후 분석 결과 생성을 다시 시도해 주세요. "
-                "(오류 코드: GPT_REPORT_RESPONSE_INVALID, "
-                "단계: gpt-report-text, 오류 유형: RuntimeError, "
-                "검증 필드: metric_advice.HALLUX_VALGUS.observation, "
-                "검증 규칙: SENTENCE_COUNT_OUT_OF_RANGE, 요청 ID: request-)"
-            ),
-            "GPT_REPORT_GENERATION_FAILED": (
-                "사진 분석 결과 문구 생성 단계에서 오류가 발생했습니다. "
-                "잠시 후 분석 결과 생성을 다시 시도해 주세요. "
-                "(오류 코드: GPT_REPORT_GENERATION_FAILED, "
-                "단계: gpt-report-text, 오류 유형: RuntimeError, 요청 ID: request-)"
-            ),
+            "GPT_REPORT_RESPONSE_INVALID": "사진 분석 결과 생성에 실패했습니다.",
+            "GPT_REPORT_GENERATION_FAILED": "사진 분석 결과 생성에 실패했습니다.",
         }
 
         for diagnostic_code, expected_detail in cases.items():
@@ -279,7 +265,7 @@ class MeasurementFailureNotifierTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
 
-    async def test_detail_is_bounded_and_contains_only_allowlisted_safe_fields(self) -> None:
+    async def test_detail_is_short_and_excludes_diagnostic_metadata(self) -> None:
         backend = _Backend()
         with patch.object(
             notifier.httpx,
@@ -302,10 +288,46 @@ class MeasurementFailureNotifierTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("\n", detail)
         self.assertNotIn("?", detail)
         self.assertNotIn("(", detail)
-        self.assertEqual(
-            {part.split("=", 1)[0] for part in detail.split("; ")},
-            {"pipeline", "stage", "errorType", "requestId"},
+        self.assertEqual(detail, "사진 촬영에 실패했습니다.")
+
+    async def test_photo_failure_detail_identifies_capture_in_one_sentence(self) -> None:
+        cases = (
+            ("RIGHT_PLANTAR_FOOT_NOT_DETECTED", "rightPlantarFootImage", "오른발 발바닥 촬영에 실패했습니다."),
+            ("LEFT_PLANTAR_FOOT_NOT_DETECTED", "leftPlantarFootImage", "왼발 발바닥 촬영에 실패했습니다."),
+            ("RIGHT_PLANTAR_FOOT_NOT_DETECTED", None, "오른발 발바닥 촬영에 실패했습니다."),
+            ("LEFT_PLANTAR_FOOT_NOT_DETECTED", None, "왼발 발바닥 촬영에 실패했습니다."),
+            ("PLANTAR_DECODE_FAILED", "rightPlantarFootImage", "오른발 발바닥 촬영에 실패했습니다."),
+            ("PLANTAR_CAPTURE_BLANK", "leftPlantarFootImage", "왼발 발바닥 촬영에 실패했습니다."),
+            ("PLANTAR_CAPTURE_NEAR_WHITE", "rightPlantarFootImage", "오른발 발바닥 촬영에 실패했습니다."),
+            ("PHOTO_UPLOAD_EMPTY", "rightPlantarFootImage", "오른발 발바닥 촬영에 실패했습니다."),
+            ("PHOTO_UPLOAD_TOO_LARGE", "leftPlantarFootImage", "왼발 발바닥 촬영에 실패했습니다."),
+            ("DORSAL_DECODE_FAILED", "dorsalFootImage", "발등 촬영에 실패했습니다."),
+            ("DORSAL_FEET_NOT_DETECTED", "dorsalFootImage", "발등 촬영에 실패했습니다."),
+            ("PHOTO_UPLOAD_EMPTY", "dorsalFootImage", "발등 촬영에 실패했습니다."),
         )
+        for diagnostic_code, image_field, expected_detail in cases:
+            with self.subTest(code=diagnostic_code, image_field=image_field):
+                backend = _Backend()
+                with patch.object(notifier.httpx, "AsyncClient", return_value=backend):
+                    result = await notifier.notify_measurement_failed(
+                        measurement_session_id=34,
+                        authorization="Bearer test-token",
+                        failure_reason="CAMERA_ERROR",
+                        pipeline="full-photo-analysis-v1",
+                        stage="capture-preflight",
+                        error_type="PhotoCapturePreflightError",
+                        request_id="request-123",
+                        diagnostic_code=diagnostic_code,
+                        image_field=image_field,
+                        photo_capture_attempt=0,
+                    )
+                self.assertTrue(result)
+                self.assertEqual(backend.calls[0][1]["params"], {
+                    "status": "FAILED",
+                    "failureReason": "CAMERA_ERROR",
+                    "photoCaptureAttempt": 0,
+                    "failureDetail": expected_detail,
+                })
 
     async def test_known_photo_diagnostic_forwards_allowlisted_korean_detail(self) -> None:
         backend = _Backend(status_code=200, json_body={"result": {"status": "FAILED"}})
@@ -328,16 +350,11 @@ class MeasurementFailureNotifierTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result)
         detail = backend.calls[0][1]["params"]["failureDetail"]
-        guidance = notifier.photo_failure_guidance("DORSAL_MARKERS_INSUFFICIENT", "dorsalFootImage")
-        self.assertEqual(
-            detail,
-            f"{guidance.user_message} {guidance.recommended_action} "
-            "(오류 코드: DORSAL_MARKERS_INSUFFICIENT, 요청 ID: request-)",
-        )
+        self.assertEqual(detail, "발등 촬영에 실패했습니다.")
         self.assertEqual(backend.calls[0][1]["params"]["diagnosticCode"], "DORSAL_MARKERS_INSUFFICIENT")
         self.assertNotIn("secret-access-token", detail)
 
-    async def test_marker_diagnostic_and_allowlisted_reason_reach_backend_with_current_attempt(self) -> None:
+    async def test_marker_diagnostic_and_attempt_are_preserved_with_short_detail(self) -> None:
         cases = (
             ("DORSAL_MARKERS_INSUFFICIENT", "REQUIRED_MARKERS_NOT_DETECTED"),
             ("DORSAL_MARKERS_INSUFFICIENT", "MARKER_PROJECTION_UNCERTAIN"),
@@ -375,13 +392,7 @@ class MeasurementFailureNotifierTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(params["failureReason"], "INVALID_CAPTURE_DATA")
                 self.assertEqual(params["diagnosticCode"], diagnostic_code)
                 self.assertEqual(params["photoCaptureAttempt"], 2)
-                explanation = notifier.marker_occlusion_explanation(reason)
-                self.assertIsNotNone(explanation)
-                guidance = notifier.photo_failure_guidance(diagnostic_code, "dorsalFootImage")
-                self.assertEqual(params["failureDetail"], (
-                    f"{guidance.user_message} {explanation} {guidance.recommended_action} "
-                    f"(오류 코드: {diagnostic_code}, 가림 판별 코드: {reason}, 요청 ID: current-)"
-                ))
+                self.assertEqual(params["failureDetail"], "발등 촬영에 실패했습니다.")
                 self.assertLessEqual(len(params["failureDetail"]), 400)
                 self.assertNotIn("private-image", params["failureDetail"])
                 self.assertNotIn("private-", "\n".join(captured.output))
@@ -522,7 +533,7 @@ class MeasurementFailureNotifierTests(unittest.IsolatedAsyncioTestCase):
                 ))
                 self.assertEqual(set(sensor_backend.calls[0][1]["params"]), {"status", "failureReason", "failureDetail"})
 
-    async def test_unknown_photo_diagnostic_cannot_replace_safe_metadata_detail(self) -> None:
+    async def test_unknown_photo_diagnostic_uses_short_fallback_detail(self) -> None:
         backend = _Backend()
         with patch.object(
             notifier.httpx,
@@ -543,11 +554,7 @@ class MeasurementFailureNotifierTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result)
         detail = backend.calls[0][1]["params"]["failureDetail"]
-        self.assertEqual(
-            detail,
-            "pipeline=full-photo-analysis-v1; stage=capture-preflight; "
-            "errorType=ValueError; requestId=request-22",
-        )
+        self.assertEqual(detail, "사진 촬영에 실패했습니다.")
         self.assertNotIn("raw-token", detail)
 
     async def test_non_2xx_is_swallowed_without_logging_token_or_body(self) -> None:

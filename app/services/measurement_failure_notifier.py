@@ -1,6 +1,6 @@
 """Best-effort notification of terminal AI-pipeline failures.
 
-The callback deliberately accepts only allowlisted correlation fields.  Raw
+The backend failure detail is one short, allowlisted Korean sentence. Raw
 exception messages, uploaded filenames, and credentials must never become
 part of the backend query string or operator logs.
 """
@@ -19,10 +19,7 @@ from app.services.photo_capture_status import (
     valid_measurement_session_id,
     valid_photo_capture_attempt,
 )
-from app.services.photo_failure_guidance import (
-    marker_occlusion_explanation,
-    photo_failure_guidance,
-)
+from app.services.photo_failure_guidance import photo_failure_guidance
 
 
 logger = logging.getLogger(__name__)
@@ -60,7 +57,25 @@ _FAILURE_REASONS = frozenset(
 )
 _SAFE_DETAIL_CHARACTER = re.compile(r"[^A-Za-z0-9_.:-]+")
 _MAX_DETAIL_VALUE_LENGTH = 80
-_MAX_FAILURE_DETAIL_LENGTH = 400
+_FAILURE_DETAILS = {
+    "CAMERA_ERROR": "사진 촬영에 실패했습니다.",
+    "PRESSURE_SENSOR_ERROR": "압력 측정에 실패했습니다.",
+    "AI_SERVER_ERROR": "AI 분석에 실패했습니다.",
+    "HARDWARE_TIMEOUT": "장치 응답 시간이 초과되었습니다.",
+    "NETWORK_ERROR": "서버 통신에 실패했습니다.",
+    "USER_CANCELLED": "측정이 취소되었습니다.",
+    "REPORT_SAVE_ERROR": "분석 결과 저장에 실패했습니다.",
+    "INVALID_CAPTURE_DATA": "사진 촬영에 실패했습니다.",
+    "INVALID_PRESSURE_DATA": "압력 측정에 실패했습니다.",
+    "DEVICE_DISCONNECTED": "장치 연결이 끊어졌습니다.",
+    "TOKEN_EXPIRED": "인증이 만료되었습니다.",
+    "UNKNOWN": "측정 처리에 실패했습니다.",
+}
+_CAPTURE_FAILURE_DETAILS = {
+    "dorsalFootImage": "발등 촬영에 실패했습니다.",
+    "leftPlantarFootImage": "왼발 발바닥 촬영에 실패했습니다.",
+    "rightPlantarFootImage": "오른발 발바닥 촬영에 실패했습니다.",
+}
 _DORSAL_MARKER_DIAGNOSTIC_CODES = frozenset({
     "DORSAL_MARKERS_INSUFFICIENT",
     "DORSAL_ARUCO_GEOMETRY_INVALID",
@@ -79,66 +94,25 @@ def _safe_detail_value(value: object) -> str:
 
 def _build_failure_detail(
     *,
-    pipeline: str,
-    stage: str,
-    error_type: str,
-    request_id: str,
+    failure_reason: str,
     diagnostic_code: str | None = None,
     image_field: str | None = None,
-    validation_field: str | None = None,
-    validation_rule: str | None = None,
-    marker_occlusion_reason: str | None = None,
 ) -> str:
+    """Return app-ready copy without actions or diagnostic metadata."""
+
     guidance = photo_failure_guidance(diagnostic_code, image_field)
     if guidance is not None:
-        # These Korean sentences come exclusively from the closed mapping in
-        # photo_failure_guidance. Never substitute an exception message here.
-        safe_code = _safe_detail_value(guidance.diagnostic_code)
-        safe_request_id = _safe_detail_value(request_id)[:8]
-        diagnostic_context = ""
-        marker_explanation = None
-        if (
-            guidance.diagnostic_code in _DORSAL_MARKER_DIAGNOSTIC_CODES
-            and isinstance(marker_occlusion_reason, str)
-        ):
-            marker_explanation = marker_occlusion_explanation(marker_occlusion_reason)
-            if marker_explanation is not None:
-                # The helper only resolves fixed reason codes. Unknown input
-                # never becomes backend guidance, even after sanitization.
-                diagnostic_context = (
-                    f", 가림 판별 코드: {_safe_detail_value(marker_occlusion_reason)}"
-                )
-        if safe_code.startswith("GPT_REPORT_"):
-            context_parts = [
-                f"단계: {_safe_detail_value(stage)}",
-                f"오류 유형: {_safe_detail_value(error_type)}",
-            ]
-            if validation_field is not None:
-                context_parts.append(
-                    f"검증 필드: {_safe_detail_value(validation_field)}"
-                )
-            if validation_rule is not None:
-                context_parts.append(
-                    f"검증 규칙: {_safe_detail_value(validation_rule)}"
-                )
-            diagnostic_context = ", " + ", ".join(context_parts)
-        detail = (
-            f"{guidance.user_message} "
-            f"{marker_explanation + ' ' if marker_explanation is not None else ''}"
-            f"{guidance.recommended_action} "
-            f"(오류 코드: {safe_code}{diagnostic_context}, "
-            f"요청 ID: {safe_request_id})"
-        )
-        return detail[:_MAX_FAILURE_DETAIL_LENGTH]
-    detail = "; ".join(
-        (
-            f"pipeline={_safe_detail_value(pipeline)}",
-            f"stage={_safe_detail_value(stage)}",
-            f"errorType={_safe_detail_value(error_type)}",
-            f"requestId={_safe_detail_value(request_id)}",
-        )
-    )
-    return detail[:_MAX_FAILURE_DETAIL_LENGTH]
+        code = guidance.diagnostic_code
+        if code.startswith("GPT_REPORT_"):
+            return "사진 분석 결과 생성에 실패했습니다."
+        if code.startswith("DORSAL_"):
+            return _CAPTURE_FAILURE_DETAILS["dorsalFootImage"]
+        if code.startswith("LEFT_PLANTAR_"):
+            return _CAPTURE_FAILURE_DETAILS["leftPlantarFootImage"]
+        if code.startswith("RIGHT_PLANTAR_"):
+            return _CAPTURE_FAILURE_DETAILS["rightPlantarFootImage"]
+        return _CAPTURE_FAILURE_DETAILS.get(str(image_field), _FAILURE_DETAILS["CAMERA_ERROR"])
+    return _FAILURE_DETAILS.get(failure_reason, _FAILURE_DETAILS["UNKNOWN"])
 
 
 def _confirmed_marker_failure_state(
@@ -245,15 +219,9 @@ async def notify_measurement_failed(
             measurement_session_id=measurement_session_id
         )
         failure_detail = _build_failure_detail(
-            pipeline=pipeline,
-            stage=stage,
-            error_type=error_type,
-            request_id=request_id,
+            failure_reason=failure_reason,
             diagnostic_code=diagnostic_code,
             image_field=image_field,
-            validation_field=validation_field,
-            validation_rule=validation_rule,
-            marker_occlusion_reason=marker_occlusion_reason,
         )
         params: dict[str, str | int] = {
             "status": "FAILED",
