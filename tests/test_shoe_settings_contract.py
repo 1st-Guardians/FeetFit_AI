@@ -9,6 +9,12 @@ from app.core.config import Settings
 
 
 class ShoeSettingsContractTests(unittest.TestCase):
+    def test_recommendation_context_defaults_to_maximum_server_page_size(self) -> None:
+        self.assertEqual(
+            Settings(_env_file=None).shoe_recommendation_context_page_size,
+            200,
+        )
+
     def test_embedding_model_defaults_to_local_cache_with_explicit_opt_out(self) -> None:
         self.assertTrue(
             Settings(_env_file=None).shoe_embedding_local_files_only

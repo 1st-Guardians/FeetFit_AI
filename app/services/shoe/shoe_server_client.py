@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import logging
+import time
 from typing import Any, TypeVar
 
 import httpx
@@ -18,6 +20,7 @@ from app.schemas.shoe_server import (
 
 
 ResponseModelT = TypeVar("ResponseModelT", bound=BaseModel)
+logger = logging.getLogger(__name__)
 
 
 class ShoeServerClientError(RuntimeError):
@@ -78,23 +81,79 @@ class ShoeServerClient:
     async def fetch_recommendation_context(
         self, measurement_session_id: int
     ) -> ServerRecommendationContext:
+        if self._http_client is not None:
+            return await self._fetch_recommendation_context_pages(
+                measurement_session_id,
+                self._http_client,
+            )
+        async with httpx.AsyncClient(
+            timeout=settings.report_proxy_timeout_seconds,
+            trust_env=False,
+        ) as http_client:
+            return await self._fetch_recommendation_context_pages(
+                measurement_session_id,
+                http_client,
+            )
+
+    async def _fetch_recommendation_context_pages(
+        self,
+        measurement_session_id: int,
+        http_client: httpx.AsyncClient,
+    ) -> ServerRecommendationContext:
         first_page: ServerRecommendationContextPage | None = None
         shoes = []
         seen_shoe_ids: set[int] = set()
         page = 0
+        page_size = settings.shoe_recommendation_context_page_size
+        fetch_started_at = time.perf_counter()
+        request_duration_ms = 0.0
+        parse_duration_ms = 0.0
+        transferred_bytes = 0
+        decoded_bytes = 0
 
         while True:
+            page_started_at = time.perf_counter()
             response = await self._request(
                 "GET",
                 settings.shoe_recommendation_context_endpoint,
                 params={
                     "measurementSessionId": measurement_session_id,
                     "page": page,
-                    "size": settings.shoe_recommendation_context_page_size,
+                    "size": page_size,
                 },
+                _http_client=http_client,
             )
+            page_request_duration_ms = (time.perf_counter() - page_started_at) * 1_000
+            request_duration_ms += page_request_duration_ms
+            page_decoded_bytes = len(response.content)
+            decoded_bytes += page_decoded_bytes
+            content_encoding = response.headers.get("content-encoding", "identity")
+            content_length = response.headers.get("content-length")
+            try:
+                page_transferred_bytes = int(content_length) if content_length else page_decoded_bytes
+            except ValueError:
+                page_transferred_bytes = page_decoded_bytes
+            transferred_bytes += page_transferred_bytes
+
+            parse_started_at = time.perf_counter()
             result = self._parse_result(response, ServerRecommendationContextPage)
+            page_parse_duration_ms = (time.perf_counter() - parse_started_at) * 1_000
+            parse_duration_ms += page_parse_duration_ms
             self._validate_context_page(result, measurement_session_id, page, first_page)
+            logger.info(
+                "Shoe recommendation context page fetched: session=%s page=%s "
+                "pageSize=%s shoeCount=%s requestMs=%.1f parseMs=%.1f "
+                "transferredBytes=%s decodedBytes=%s contentEncoding=%s",
+                measurement_session_id,
+                page,
+                page_size,
+                len(result.shoes),
+                page_request_duration_ms,
+                page_parse_duration_ms,
+                page_transferred_bytes,
+                page_decoded_bytes,
+                content_encoding,
+            )
 
             for shoe in result.shoes:
                 if shoe.id in seen_shoe_ids:
@@ -117,6 +176,20 @@ class ShoeServerClient:
                 "Feetfit_Server pagination totalElements does not match the collected shoes "
                 f"(expected={first_page.total_elements}, collected={len(shoes)})."
             )
+
+        logger.info(
+            "Shoe recommendation context fetch completed: session=%s pages=%s "
+            "shoeCount=%s totalMs=%.1f requestMs=%.1f parseMs=%.1f "
+            "transferredBytes=%s decodedBytes=%s",
+            measurement_session_id,
+            page + 1,
+            len(shoes),
+            (time.perf_counter() - fetch_started_at) * 1_000,
+            request_duration_ms,
+            parse_duration_ms,
+            transferred_bytes,
+            decoded_bytes,
+        )
 
         return ServerRecommendationContext(
             measurement_session_id=first_page.measurement_session_id,
@@ -238,9 +311,16 @@ class ShoeServerClient:
         timeout_seconds = kwargs.pop(
             "_timeout_seconds", settings.report_proxy_timeout_seconds
         )
+        request_client = kwargs.pop("_http_client", None) or self._http_client
         try:
-            if self._http_client is not None:
-                return await self._http_client.request(method, url, headers=self._headers, **kwargs)
+            if request_client is not None:
+                return await request_client.request(
+                    method,
+                    url,
+                    headers=self._headers,
+                    timeout=timeout_seconds,
+                    **kwargs,
+                )
             async with httpx.AsyncClient(
                 timeout=timeout_seconds,
                 trust_env=False,

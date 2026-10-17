@@ -13,6 +13,8 @@ from math import ceil
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -218,7 +220,24 @@ class _BenchmarkHandler(BaseHTTPRequestHandler):
         return
 
 
-async def _run_once(endpoint: str, page_size: int) -> float:
+class _FreshConnectionClient:
+    """Reproduce the pre-optimization client lifecycle for baseline timing."""
+
+    async def request(self, method: str, url: str, **kwargs):
+        timeout = kwargs.pop("timeout")
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            trust_env=False,
+        ) as client:
+            return await client.request(method, url, **kwargs)
+
+
+async def _run_once(
+    endpoint: str,
+    page_size: int,
+    *,
+    reuse_connections: bool,
+) -> float:
     old_endpoint = settings.shoe_recommendation_context_endpoint
     old_page_size = settings.shoe_recommendation_context_page_size
     settings.shoe_recommendation_context_endpoint = endpoint
@@ -227,6 +246,7 @@ async def _run_once(endpoint: str, page_size: int) -> float:
         client = ShoeServerClient(
             "Bearer benchmark-token",
             internal_api_key="benchmark-internal-key",
+            http_client=None if reuse_connections else _FreshConnectionClient(),
         )
         started_at = time.perf_counter()
         context = await client.fetch_recommendation_context(1)
@@ -243,6 +263,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--page-size", type=int, choices=(100, 200), required=True)
     parser.add_argument("--gzip", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--reuse-connections",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--runs", type=int, default=3)
     args = parser.parse_args()
 
@@ -253,7 +278,11 @@ def main() -> int:
     durations = []
     try:
         for _ in range(args.runs):
-            durations.append(asyncio.run(_run_once(endpoint, args.page_size)))
+            durations.append(asyncio.run(_run_once(
+                endpoint,
+                args.page_size,
+                reuse_connections=args.reuse_connections,
+            )))
     finally:
         server.shutdown()
         server.server_close()
@@ -265,6 +294,7 @@ def main() -> int:
         "reviewsPerShoe": REVIEWS_PER_SHOE,
         "pageSize": args.page_size,
         "gzip": args.gzip,
+        "reuseConnections": args.reuse_connections,
         "runs": args.runs,
         "medianMs": round(statistics.median(durations), 2),
         "minMs": round(min(durations), 2),

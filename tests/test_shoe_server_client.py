@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from pydantic import BaseModel
@@ -196,6 +196,37 @@ def _saved_context(*, user_id: int = 7, measurement_session_id: int = 30) -> dic
 
 
 class ShoeServerClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_owned_http_client_is_reused_for_all_context_pages(self) -> None:
+        async_client = MagicMock()
+        async_client.__aenter__ = AsyncMock(return_value=async_client)
+        async_client.__aexit__ = AsyncMock(return_value=None)
+
+        async def request(method: str, url: str, **kwargs) -> httpx.Response:
+            page = int(kwargs["params"]["page"])
+            request_value = httpx.Request(method, url, params=kwargs["params"])
+            return httpx.Response(
+                200,
+                json=_api_response(_context_page(page)),
+                request=request_value,
+            )
+
+        async_client.request = AsyncMock(side_effect=request)
+        with patch(
+            "app.services.shoe.shoe_server_client.httpx.AsyncClient",
+            return_value=async_client,
+        ) as client_type:
+            client = ShoeServerClient(
+                "Bearer token",
+                internal_api_key="test-internal-key",
+            )
+            context = await client.fetch_recommendation_context(30)
+
+        self.assertEqual([shoe.id for shoe in context.shoes], [101, 102])
+        client_type.assert_called_once()
+        self.assertEqual(async_client.request.await_count, 2)
+        async_client.__aenter__.assert_awaited_once()
+        async_client.__aexit__.assert_awaited_once()
+
     async def test_fetches_runrepeat_characteristics_for_summary_grounding(self) -> None:
         seen_request: httpx.Request | None = None
 
@@ -259,7 +290,7 @@ class ShoeServerClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raw_value, Decimal("21.30"))
         self.assertEqual(len(requests), 2)
         self.assertEqual([request.url.params["page"] for request in requests], ["0", "1"])
-        self.assertEqual([request.url.params["size"] for request in requests], ["100", "100"])
+        self.assertEqual([request.url.params["size"] for request in requests], ["200", "200"])
         self.assertTrue(all(request.headers["Authorization"] == "Bearer forwarded-token" for request in requests))
         self.assertTrue(
             all(request.headers["X-Internal-Api-Key"] == "test-internal-key" for request in requests)

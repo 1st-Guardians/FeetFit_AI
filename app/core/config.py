@@ -109,7 +109,7 @@ class Settings(BaseSettings):
             "SHOE_CHARACTERISTICS_ENDPOINT_TEMPLATE",
         ),
     )
-    shoe_recommendation_context_page_size: int = Field(default=100, ge=1, le=200)
+    shoe_recommendation_context_page_size: int = Field(default=200, ge=1, le=200)
     feetfit_server_internal_api_key: str = Field(
         default="",
         repr=False,

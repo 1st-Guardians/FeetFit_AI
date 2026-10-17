@@ -694,6 +694,7 @@ async def create_shoe_recommendations_report(
         )
 
     authorization_header = f"{credentials.scheme} {credentials.credentials}"
+    context_fetch_started_at = time.perf_counter()
     try:
         server_client = ShoeServerClient(authorization_header)
         context = await server_client.fetch_recommendation_context(measurement_session_id)
@@ -737,6 +738,16 @@ async def create_shoe_recommendations_report(
             detail="Shoe recommendation context preparation failed.",
         ) from exc
 
+    _log_shoe_recommendation_progress(
+        request_id=request_id,
+        measurement_session_id=measurement_session_id,
+        event="stage_completed",
+        stage="context-fetch",
+        message="신발 추천에 필요한 측정 결과와 신발 데이터를 모두 불러왔습니다.",
+        duration_ms=round((time.perf_counter() - context_fetch_started_at) * 1000),
+    )
+
+    recommendation_compute_started_at = time.perf_counter()
     try:
         batch = await run_in_threadpool(compute_shoe_recommendations, context)
     except ShoeRecommendationBusyError as exc:
@@ -773,6 +784,17 @@ async def create_shoe_recommendations_report(
             detail="Shoe recommendation calculation failed.",
         ) from exc
 
+    _log_shoe_recommendation_progress(
+        request_id=request_id,
+        measurement_session_id=measurement_session_id,
+        event="stage_completed",
+        stage="recommendation-compute",
+        message="신발 적합도와 추천 근거 계산을 완료했습니다.",
+        recommendation_count=len(batch.items),
+        duration_ms=round((time.perf_counter() - recommendation_compute_started_at) * 1000),
+    )
+
+    payload_started_at = time.perf_counter()
     try:
         forward_request = ShoeRecommendationForwardRequest(
             measurement_session_id=batch.measurement_session_id,
@@ -806,6 +828,18 @@ async def create_shoe_recommendations_report(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Shoe recommendation payload preparation failed.",
         ) from exc
+
+    _log_shoe_recommendation_progress(
+        request_id=request_id,
+        measurement_session_id=measurement_session_id,
+        event="stage_completed",
+        stage="recommendation-payload",
+        message="신발 추천 결과를 백엔드 저장 형식으로 준비했습니다.",
+        recommendation_count=len(batch.items),
+        duration_ms=round((time.perf_counter() - payload_started_at) * 1000),
+    )
+
+    recommendation_save_started_at = time.perf_counter()
     try:
         upstream_response = await server_client.forward_recommendations(forward_request)
     except ShoeServerClientError as exc:
@@ -830,6 +864,17 @@ async def create_shoe_recommendations_report(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Shoe recommendation save request failed.",
         ) from exc
+
+    _log_shoe_recommendation_progress(
+        request_id=request_id,
+        measurement_session_id=measurement_session_id,
+        event="stage_completed",
+        stage="recommendation-save",
+        message="백엔드의 신발 추천 저장 응답을 받았습니다.",
+        status_code=upstream_response.status_code,
+        recommendation_count=len(batch.items),
+        duration_ms=round((time.perf_counter() - recommendation_save_started_at) * 1000),
+    )
 
     duration_ms = round((time.perf_counter() - started_at) * 1000)
     if 200 <= upstream_response.status_code < 300:
