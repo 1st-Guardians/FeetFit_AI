@@ -10,6 +10,7 @@ import httpx
 import numpy as np
 from fastapi.testclient import TestClient
 
+from app.api.routes import reports as reports_routes
 from app.core.config import settings
 from app.main import app
 from app.services.integrated_foot_analysis import (
@@ -25,7 +26,6 @@ from app.services.hallux_valgus_analysis import (
     HalluxValgusAnalysisResult,
     score_analysis_text,
 )
-from app.services.report_text_generation import TineaReportText
 from app.services.tinea_analysis import (
     AnalysisError,
     TineaAnalysisResult,
@@ -89,15 +89,11 @@ class ApiContractTests(unittest.TestCase):
         self.assertNotIn("?", text)
 
     def test_integrated_route_is_registered_without_removing_legacy_routes(self) -> None:
-        paths = app.openapi()["paths"]
+        paths = {route.path for route in reports_routes.router.routes}
 
-        self.assertIn("/api/reports/tina-pedis", paths)
-        self.assertIn("/api/reports/hallux-valgus", paths)
-        self.assertIn("/api/reports/integrated-foot-analysis", paths)
-        content = paths["/api/reports/integrated-foot-analysis"]["post"][
-            "requestBody"
-        ]["content"]
-        self.assertIn("multipart/form-data", content)
+        self.assertIn("/tina-pedis", paths)
+        self.assertIn("/hallux-valgus", paths)
+        self.assertIn("/integrated-foot-analysis", paths)
 
     def test_single_upload_runs_both_report_contracts(self) -> None:
         ok, encoded = cv2.imencode(
@@ -139,6 +135,7 @@ class ApiContractTests(unittest.TestCase):
             side: TineaAnalysisResult(
                 suspicion_map_png=image_png,
                 photo_overlay_png=image_png,
+                clean_original_png=image_png,
                 original_filename=f"{side}.png",
                 fungal_safety_score=95,
                 skin_reaction_safety_score=94,
@@ -182,20 +179,16 @@ class ApiContractTests(unittest.TestCase):
                 )
 
         fake_client = FakeAsyncClient()
-        tinea_text = TineaReportText("fungal", "skin", "total")
         with (
             patch(
                 "app.api.routes.reports.analyze_integrated_foot_photo",
                 return_value=analysis,
             ),
             patch(
-                "app.api.routes.reports.generate_tinea_report_text",
-                new=AsyncMock(return_value=tinea_text),
-            ),
-            patch(
                 "app.api.routes.reports.generate_hallux_score_analysis_text",
                 new=AsyncMock(return_value="hallux"),
             ),
+            patch("app.api.routes.reports.stage_dorsal_tinea") as stage_tinea,
             patch(
                 "app.api.routes.reports.httpx.AsyncClient",
                 return_value=fake_client,
@@ -215,10 +208,10 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(len(fake_client.calls), 2)
         self.assertEqual(
             {call[0] for call in fake_client.calls},
-            {settings.tinea_report_endpoint, settings.hallux_valgus_report_endpoint},
-        )
-        tinea_call = next(
-            call for call in fake_client.calls if call[0] == settings.tinea_report_endpoint
+            {
+                settings.hallux_valgus_report_endpoint,
+                settings.daily_metrics_report_endpoint,
+            },
         )
         hallux_call = next(
             call
@@ -226,13 +219,10 @@ class ApiContractTests(unittest.TestCase):
             if call[0] == settings.hallux_valgus_report_endpoint
         )
         self.assertEqual(
-            set(tinea_call[1]["files"]),
-            {"suspiciousAreaMapImage", "originalFootImage"},
-        )
-        self.assertEqual(
             set(hallux_call[1]["files"]),
             {"leftFootImage", "rightFootImage"},
         )
+        stage_tinea.assert_called_once()
 
 
 @unittest.skipUnless(

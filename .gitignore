@@ -4,15 +4,23 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 .cache/
 .ultralytics/
+Ultralytics/
+.mplconfig/
 .claude/
 .codex/
 .agents/
+.aws/
 .idea/
 .vscode/
 .venv/
 venv/
+.build/
+.test-deps/
 .env
 .env.*
 !.env.example
@@ -24,29 +32,51 @@ venv/
 *.p12
 *.pfx
 
-weights/
+# Models and generated weight artifacts. Keep only documentation/manifests.
+weights/**
+!weights/README.md
+!weights/manifest.json
+!weights/.gitkeep
 models/
 *.pt
 *.pth
+*.ckpt
 *.onnx
+*.safetensors
+*.bin
+*.h5
+*.hdf5
+*.tflite
+*.engine
 *.npz
 
-storage/uploads/
-storage/generated/
-storage/debug_*
-
-# Local execution/audit reports can contain user, session, device, and DB metadata.
+# Runtime outputs and private datasets.
+storage/**
+!storage/.gitkeep
 artifacts/
+outputs/
+datasets/
+test_images/
 
-# Local databases, coverage, packaging, and OS metadata.
+# Local databases, archives, packaging, and OS metadata.
 *.db
 *.sqlite
 *.sqlite3
-.coverage
-coverage.xml
-htmlcov/
+*.sqlite*
+*.zip
+*.tar
+*.tar.gz
 build/
 dist/
 *.egg-info/
+
+# Image data is local unless a maintainer explicitly force-adds a fixture.
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.bmp
+*.tif
+*.tiff
 .DS_Store
 Thumbs.db

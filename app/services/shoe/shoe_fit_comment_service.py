@@ -328,7 +328,8 @@ async def ollama_runtime_status() -> dict[str, object]:
     url = f"{settings.ollama_base_url.rstrip('/')}/api/ps"
     try:
         async with httpx.AsyncClient(
-            timeout=min(settings.ollama_request_timeout_seconds, 10.0)
+            timeout=min(settings.ollama_request_timeout_seconds, 10.0),
+            trust_env=False,
         ) as client:
             response = await client.get(url)
             response.raise_for_status()
@@ -371,7 +372,8 @@ async def prewarm_ollama_model() -> bool:
     url = f"{settings.ollama_base_url.rstrip('/')}/api/generate"
     try:
         async with httpx.AsyncClient(
-            timeout=settings.ollama_request_timeout_seconds
+            timeout=settings.ollama_request_timeout_seconds,
+            trust_env=False,
         ) as client:
             response = await client.post(
                 url,

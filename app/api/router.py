@@ -1,13 +1,35 @@
 from fastapi import APIRouter
 
-from app.api.routes import reports, shoe_ingestion, shoes
+from app.api.routes import (
+    environment,
+    photo_analysis,
+    pressure_heatmaps,
+    pressed_regions,
+    reports,
+    shoes,
+)
 
 
 api_router = APIRouter()
 api_router.include_router(reports.router, prefix="/reports", tags=["reports"])
+api_router.include_router(
+    photo_analysis.router,
+    prefix="/reports/photo-analysis",
+    tags=["Feetfit Analysis"],
+)
 api_router.include_router(shoes.router, prefix="/shoes", tags=["shoes"])
 api_router.include_router(
-    shoe_ingestion.router,
-    prefix="/admin/shoe-ingestion",
-    tags=["관리자 - 신발 DB 적재"],
+    pressed_regions.router,
+    prefix="/reports/daily-foot-analysis/plantar-footprint",
+    tags=["pressed-regions"],
+)
+api_router.include_router(
+    pressure_heatmaps.router,
+    prefix="/reports/daily-foot-analysis/pressure-heatmap",
+    tags=["Feetfit Analysis"],
+)
+api_router.include_router(
+    environment.router,
+    prefix="/reports/daily-foot-analysis/environment",
+    tags=["Feetfit Analysis"],
 )

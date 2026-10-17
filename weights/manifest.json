@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    {
+      "filename": "foot_seg_yolo11n_best.pt",
+      "purpose": "YOLO foot extraction",
+      "sizeBytes": 6082980,
+      "sha256": "b02ca248606c286e3383658515b8c534e30df1c5c29850e4aa17b54cecaeaddf"
+    },
+    {
+      "filename": "tinea_segformer_b2_teacher_student_best.pt",
+      "purpose": "Dorsal fungal-only SegFormer-B2 Teacher-Student (threshold 0.30)",
+      "sizeBytes": 109533882,
+      "sha256": "7a6a9c73a332756e52e83148cc9fa48e119f1b879697babe43f61794136d87f9"
+    },
+    {
+      "filename": "wound_segformer_experiment_c_best.pt",
+      "purpose": "Dorsal wound SegFormer-B0",
+      "sizeBytes": 44794394,
+      "sha256": "a100e0a99d106e89b25d57cdabbe557c00ac5368de4d4fd65488ee50a57b98d0"
+    },
+    {
+      "filename": "plantar_contact_segformer_b0_real_finetune_brightness2_best.pt",
+      "purpose": "Plantar contact SegFormer-B0",
+      "sizeBytes": 14945118,
+      "sha256": "c6d7c7e9fdb51b7d48805f4f6c48ac0182fe0d5a634ec04987604e1d2e3b297f"
+    },
+    {
+      "filename": "camera_calibration.npz",
+      "purpose": "Camera calibration for the existing rig",
+      "sizeBytes": 4112,
+      "sha256": "fbceaa196e5d0a4513bf9d708c97d08492d2896ee762450f743014d6e1649538"
+    }
+  ]
+}

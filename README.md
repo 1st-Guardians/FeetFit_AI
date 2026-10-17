@@ -1,8 +1,12 @@
 # Feetfit AI API
 
-FastAPI server for analyzing left/right foot images (tinea pedis, hallux valgus) and
-computing shoe fit recommendations, forwarding all results to the report backend
-(Feetfit_Server).
+Feetfit의 통합 FastAPI 서버입니다. 발 사진·족저 압력·온습도 분석 기능은
+`AI-Server-Eunseo` 구현을 기준으로 하고, 신발 추천·리뷰 근거·요약 생성 기능은
+`Feetfit_AI`(Minji) 구현을 기준으로 합니다. Python 패키지 호환 범위와 실행 방식도
+Minji 프로젝트를 기준으로 유지합니다.
+
+`app/services/shoe/`와 신발 API 계약은 Minji 영역입니다. 그 밖의 사진, 무좀,
+상처, 무지외반, 발바닥 접촉, 압력 히트맵 및 환경 분석은 Eunseo 영역입니다.
 
 ## Structure
 
@@ -12,8 +16,12 @@ app/
   api/
     router.py                   Root API router
     routes/
-      reports.py                Tinea pedis / hallux valgus / shoe-recommendations endpoints
+      reports.py                Legacy foot reports + Minji shoe-recommendation endpoint
       shoes.py                  Shoe detail summary generation trigger endpoint
+      photo_analysis.py         Integrated photo-analysis intake
+      pressed_regions.py        Plantar footprint/contact analysis
+      pressure_heatmaps.py      Pressure heatmap and balance analysis
+      environment.py            Temperature/humidity analysis
   core/
     config.py                   Environment and app settings
     security.py                 Swagger Bearer token security scheme
@@ -23,18 +31,20 @@ app/
   schemas/
     reports.py                  Tinea pedis / hallux valgus request schemas
     shoes.py                    Shoe recommendation batch request/forward schemas
-    shoe_server.py              Feetfit_Server internal read contract schemas
-    shoe_fit_comment.py         Ollama-generated summary response schema
+    shoe_server.py              Minji Feetfit_Server internal read contracts
+    shoe_fit_comment.py         Minji Ollama summary response contract
   services/
-    tinea_analysis.py           Foot/tinea segmentation, scoring, suspicion map render
-    hallux_valgus_analysis.py   Foot outline extraction, hallux valgus angle (HVA) scoring
-    shoe_db.py                  Legacy direct-DB adapter (not used by HTTP routes)
-    shoe_server_client.py       Forwarded-JWT Feetfit_Server context/callback client
-    shoe_embedding.py           BGE-M3 sentence embedding + disk cache + cosine ranking
-    shoe_feature_rules.py       Session foot-need text used by semantic review search
-    shoe_fit_policy.py          RunRepeat quantitative TEMPORARY_HEURISTIC policy
-    shoe_recommendation.py      전체 신발 fitScore/riskLevel + BGE-M3 후보 계산
-    shoe_fit_comment_service.py Ollama 후보 subset 검증 + point/review summaries
+    tinea_analysis.py           Eunseo foot/tinea segmentation and scoring
+    integrated_foot_analysis.py Eunseo ArUco geometry and integrated analysis
+    pressure_heatmap_analysis.py Eunseo pressure analysis
+    wound_analysis.py           Eunseo wound segmentation
+    shoe/
+      shoe_server_client.py       Minji Feetfit_Server context/callback client
+      shoe_embedding.py           Minji BGE-M3 embedding/cache/cosine ranking
+      shoe_feature_rules.py       Minji semantic review-search needs
+      shoe_fit_policy.py          Minji RunRepeat fit policy
+      shoe_recommendation.py      Minji fitScore/risk/review recommendation
+      shoe_fit_comment_service.py Minji point/review summary generation
 weights/                        Model weights, ignored by git
 ```
 
@@ -145,13 +155,18 @@ the OpenAI Responses API when `OPENAI_API_KEY` is configured. If the key is not
 set or the API call fails, the server falls back to local rule-based Korean
 summary text and still forwards the report request.
 
-Model weights must be placed here:
+현재 분석 모델 manifest(`weights/manifest.json`)에 기록된 파일은 다음과 같습니다.
 
 ```text
 <project>/weights/foot_seg_yolo11n_best.pt
-<project>/weights/tinea_pedis_best.pt
-<project>/weights/sam_vit_b_01ec64.pth
+<project>/weights/tinea_segformer_b2_teacher_student_best.pt
+<project>/weights/wound_segformer_experiment_c_best.pt
+<project>/weights/plantar_contact_segformer_b0_real_finetune_brightness2_best.pt
+<project>/weights/camera_calibration.npz
 ```
+
+추가 로컬 모델을 사용하는 기능은 `.env.example`의 경로 설정을 확인하세요.
+가중치 바이너리와 실제 `.env`는 Git에 올리지 않습니다.
 
 The shoe-recommendation endpoints additionally require:
 

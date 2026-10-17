@@ -241,7 +241,10 @@ class ShoeServerClient:
         try:
             if self._http_client is not None:
                 return await self._http_client.request(method, url, headers=self._headers, **kwargs)
-            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            async with httpx.AsyncClient(
+                timeout=timeout_seconds,
+                trust_env=False,
+            ) as client:
                 return await client.request(method, url, headers=self._headers, **kwargs)
         except httpx.HTTPError as exc:
             raise ShoeServerClientError(f"Feetfit_Server request failed: {exc}") from exc

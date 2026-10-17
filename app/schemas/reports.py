@@ -51,6 +51,22 @@ class HalluxValgusReportRequest(BaseModel):
     score_analysis_text: str = Field(alias="scoreAnalysisText")
 
 
+class FootMetricsReportRequest(BaseModel):
+    """Backend DTO for calibrated left/right foot dimensions."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    measurement_session_id: int = Field(alias="measurementSessionId", ge=1)
+    measured_left_foot_size_mm: float = Field(
+        alias="measuredLeftFootSizeMm", gt=0, le=500
+    )
+    measured_right_foot_size_mm: float = Field(
+        alias="measuredRightFootSizeMm", gt=0, le=500
+    )
+    left_foot_width_mm: float = Field(alias="leftFootWidthMm", gt=0, le=500)
+    right_foot_width_mm: float = Field(alias="rightFootWidthMm", gt=0, le=500)
+
+
 class FootTypeAnalysisContext(BaseModel):
     """Already-classified facts that may be shown above the shoe list.
 

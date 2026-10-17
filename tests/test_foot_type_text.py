@@ -53,7 +53,9 @@ class FootTypeTextGenerationTests(unittest.IsolatedAsyncioTestCase):
                 FootTypeAnalysisContext(pressureBalanceType=value)
                 for value in ("LEFT_DOMINANT", "BALANCED", "RIGHT_DOMINANT")
             ),
-            FootTypeAnalysisContext(plantarFootprintAnalysisText="압력 분포 차이"),
+            FootTypeAnalysisContext(
+                plantarFootprintAnalysisText="왼발과 오른발은 정상 형태입니다."
+            ),
         ]
 
         for context in contexts:
@@ -107,18 +109,21 @@ class FootTypeTextGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.evidence_id, "PRESSURE_BALANCED")
         self.assertFalse(result.type_text.startswith("이번 측정에서는"))
 
-    def test_plantar_analysis_has_safe_non_diagnostic_fallback(self) -> None:
+    def test_plantar_analysis_uses_shape_tendency_without_pressure_language(
+        self,
+    ) -> None:
         result = build_fallback_foot_type_text(
             FootTypeAnalysisContext(
                 plantarFootprintAnalysisText=(
-                    "왼발 뒤꿈치와 오른발 앞꿈치에 압력이 집중되어 있습니다."
+                    "왼발과 오른발은 정상 형태입니다."
                 )
             )
         )
 
-        self.assertEqual(result.evidence_id, "PLANTAR_PRESSURE_PATTERN")
-        self.assertIn("발바닥의 압력이 부위별로", result.type_text)
-        self.assertNotIn("아치가 낮", result.type_text)
+        self.assertEqual(result.evidence_id, "PLANTAR_SHAPE_TENDENCY")
+        self.assertIn("요족·정상·평발", result.type_text)
+        self.assertNotIn("압력", result.type_text)
+        self.assertNotIn("하중", result.type_text)
 
     async def test_gpt_may_select_only_a_supplied_evidence_id(self) -> None:
         context = FootTypeAnalysisContext(
@@ -183,7 +188,7 @@ class FootTypeTextGenerationTests(unittest.IsolatedAsyncioTestCase):
         class FakeAsyncClient:
             request_json: dict | None = None
 
-            def __init__(self, *, timeout: float) -> None:
+            def __init__(self, *, timeout: float, trust_env: bool = False) -> None:
                 self.timeout = timeout
 
             async def __aenter__(self):
@@ -259,7 +264,9 @@ class FootTypeTextApiTests(unittest.TestCase):
                     "analysis": {
                         "leftPressurePercent": 46.0,
                         "rightPressurePercent": 54.0,
-                        "plantarFootprintAnalysisText": "오른발 앞꿈치 압력 집중",
+                        "plantarFootprintAnalysisText": (
+                            "오른발은 정상 형태입니다."
+                        ),
                     },
                 },
             )
