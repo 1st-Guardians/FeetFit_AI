@@ -366,7 +366,7 @@ class FullPhotoAnalysisGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("같은 범주로 설명한다", policy["bilateral_consistency"])
         self.assertIn("한쪽 근거가 부족하면 다른 쪽 결과를 복사하지 않는다", policy["separate_categories"])
         self.assertIn("뚜렷한 형태 근거가 있을 때만", policy["high_arch_evidence"])
-        self.assertIn("낮은 아치 근거가 보이면 평발 경향을", policy["low_arch_evidence"])
+        self.assertIn("뚜렷한 형태 근거가 있을 때만", policy["low_arch_evidence"])
         self.assertIn("판단 보류 문장을 쓴다", policy["normal_or_insufficient_evidence"])
         for rule in policy.values():
             self.assertIn(rule, prompt)

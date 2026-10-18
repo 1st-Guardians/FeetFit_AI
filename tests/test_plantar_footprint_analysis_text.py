@@ -155,7 +155,7 @@ class PlantarFootprintGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("같은 범주로 설명한다", policy["bilateral_consistency"])
         self.assertIn("명확히 확인되는 형태 차이", policy["separate_categories"])
         self.assertIn("뚜렷한 형태 근거가 있을 때만", policy["high_arch_evidence"])
-        self.assertIn("경미한 경우에도", policy["low_arch_evidence"])
+        self.assertIn("뚜렷한 형태 근거가 있을 때만", policy["low_arch_evidence"])
         self.assertIn("요족이 아니라는 이유만으로 평발을 선택하지 않는다", policy["low_arch_evidence"])
         self.assertIn("정상 형태를 유지한다", policy["normal_or_insufficient_evidence"])
         self.assertIn("영역 수나 전체 면적 비율만으로", policy["normal_or_insufficient_evidence"])
