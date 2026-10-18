@@ -9,6 +9,7 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import cv2
@@ -158,6 +159,8 @@ _PROGRESS_DETAIL_KEYS = frozenset(
         "expectedHeight",
         "expectedWidth",
         "errorCode",
+        "elapsedSeconds",
+        "queueWaitSeconds",
         "failedStageCount",
         "footprintStatus",
         "fungalSafetyScore",
@@ -345,6 +348,13 @@ def _log_photo_progress(
     safe_details = _safe_progress_details(details)
     if safe_details:
         payload["details"] = safe_details
+    display_message = message
+    elapsed_seconds = safe_details.get("elapsedSeconds")
+    queue_wait_seconds = safe_details.get("queueWaitSeconds")
+    if isinstance(elapsed_seconds, (int, float)):
+        display_message += f" (소요 {elapsed_seconds:.3f}초)"
+    if isinstance(queue_wait_seconds, (int, float)):
+        display_message += f" (대기 {queue_wait_seconds:.3f}초)"
     serialized_payload = json.dumps(
         payload,
         ensure_ascii=False,
@@ -358,7 +368,7 @@ def _log_photo_progress(
         "[사진 분석][세션 %s][요청 %s] %s | pipeline_progress %s",
         int(measurement_session_id),
         str(request_id)[:8],
-        message,
+        display_message,
         serialized_payload,
     )
 
@@ -1539,6 +1549,7 @@ async def create_photo_analysis(
             event="capture_preflight_started",
             message="사진 3장의 촬영 품질 사전검증을 시작합니다.",
         )
+        capture_started_at = perf_counter()
         preflight = await run_in_threadpool(
             validate_photo_capture_preflight,
             dorsal_bytes,
@@ -1559,6 +1570,7 @@ async def create_photo_analysis(
             event="capture_preflight_passed",
             message="발등·왼발바닥·오른발바닥 사진 검증을 모두 통과했습니다.",
             details={
+                "elapsedSeconds": round(perf_counter() - capture_started_at, 3),
                 "captureValidationStatus": "PASSED",
                 "actualWidth": preflight.dorsal_width,
                 "actualHeight": preflight.dorsal_height,
@@ -1595,6 +1607,7 @@ async def create_photo_analysis(
             event="measurement_preflight_started",
             message="사진 3장 검증 완료 후 발등 치수 사전검증을 시작합니다.",
         )
+        measurement_started_at = perf_counter()
         prepared_geometry = await run_in_threadpool(
             validate_dorsal_measurement_preflight,
             dorsal_bytes,
@@ -1896,6 +1909,7 @@ async def create_photo_analysis(
         event="measurement_preflight_passed",
         message="발등 치수 사전검증을 통과해 본 분석 대기열 등록이 가능합니다.",
         details={
+            "elapsedSeconds": round(perf_counter() - measurement_started_at, 3),
             "measurementValid": prepared_geometry.measurement_valid,
             "leftFootLengthMm": prepared_geometry.feet["left"].length_mm,
             "rightFootLengthMm": prepared_geometry.feet["right"].length_mm,
@@ -2011,6 +2025,7 @@ async def create_photo_analysis(
 async def _execute_photo_pipeline(
     work_item: PhotoAnalysisWorkItem,
 ) -> JSONResponse:
+    pipeline_started_at = perf_counter()
     request_id = work_item.request_id
     output_dir = work_item.output_dir
     measurementSessionId = work_item.measurement_session_id
@@ -2085,6 +2100,14 @@ async def _execute_photo_pipeline(
         ) from exc
     _append_completed(completed_stages, stage)
 
+    _log_photo_progress(
+        request_id=request_id,
+        measurement_session_id=measurementSessionId,
+        stage=stage,
+        event="analysis_completed",
+        message="발등 무좀·피부·무지외반 통합 분석을 완료했습니다.",
+        details={"elapsedSeconds": round(perf_counter() - pipeline_started_at, 3)},
+    )
     geometry = integrated.geometry
     _log_photo_progress(
         request_id=request_id,
@@ -2208,6 +2231,7 @@ async def _execute_photo_pipeline(
             if work_item.left_plantar_prepared_input is not None
             else {}
         )
+        left_plantar_started_at = perf_counter()
         left_plantar = await run_in_threadpool(
             analyze_plantar_image,
             left_plantar_bytes,
@@ -2225,6 +2249,7 @@ async def _execute_photo_pipeline(
             message="왼발 발바닥 눌림 영역 분할 분석을 완료했습니다.",
             details={
                 "regionCount": left_progress_facts["region_count"],
+                "elapsedSeconds": round(perf_counter() - left_plantar_started_at, 3),
                 "contactAreaRatio": left_progress_facts["contact_area_ratio"],
                 "footprintStatus": left_progress_facts["status"],
             },
@@ -2242,6 +2267,7 @@ async def _execute_photo_pipeline(
             if work_item.right_plantar_prepared_input is not None
             else {}
         )
+        right_plantar_started_at = perf_counter()
         right_plantar = await run_in_threadpool(
             analyze_plantar_image,
             right_plantar_bytes,
@@ -2259,6 +2285,7 @@ async def _execute_photo_pipeline(
             message="오른발 발바닥 눌림 영역 분할 분석을 완료했습니다.",
             details={
                 "regionCount": right_progress_facts["region_count"],
+                "elapsedSeconds": round(perf_counter() - right_plantar_started_at, 3),
                 "contactAreaRatio": right_progress_facts["contact_area_ratio"],
                 "footprintStatus": right_progress_facts["status"],
             },
@@ -2459,6 +2486,7 @@ async def _execute_photo_pipeline(
         },
     )
     try:
+        generation_started_at = perf_counter()
         generated = await generate_full_photo_analysis_texts(
             dorsal_raw_image_bytes=dorsal_bytes,
             left_plantar_raw_image_bytes=left_plantar_bytes,
@@ -2517,6 +2545,7 @@ async def _execute_photo_pipeline(
         ),
         details={
             "descriptionCount": 5,
+            "elapsedSeconds": round(perf_counter() - generation_started_at, 3),
             "adviceMetricCount": len(generated.metric_advice),
             "generationSource": generated.generation_source,
             "errorCode": generation_failure_code,
@@ -3045,6 +3074,7 @@ async def _execute_photo_pipeline(
             "failedStageCount": len(failed_stages),
             "attemptedSaveCount": len(core_results) + len(summary_results),
             "successfulSaveCount": successful_save_count,
+            "elapsedSeconds": round(perf_counter() - pipeline_started_at, 3),
         },
     )
     return JSONResponse(
@@ -3060,6 +3090,7 @@ async def _execute_photo_pipeline(
 async def _run_photo_analysis_job(work_item: PhotoAnalysisWorkItem) -> None:
     """Run one accepted photo job and convert terminal failures to callbacks."""
 
+    queue_started_at = perf_counter()
     try:
         async with _photo_analysis_worker_semaphore:
             _log_photo_progress(
@@ -3068,7 +3099,10 @@ async def _run_photo_analysis_job(work_item: PhotoAnalysisWorkItem) -> None:
                 stage="queue",
                 event="job_started",
                 message="대기열에서 사진 분석 작업을 가져와 백그라운드 분석을 시작합니다.",
-                details={"photoCaptureAttempt": work_item.photo_capture_attempt},
+                details={
+                    "photoCaptureAttempt": work_item.photo_capture_attempt,
+                    "queueWaitSeconds": round(perf_counter() - queue_started_at, 3),
+                },
             )
             try:
                 response = await _execute_photo_pipeline(work_item)

@@ -19,9 +19,11 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 from io import BytesIO
 import json
+import logging
 import math
 from pathlib import Path
 import threading
+from time import perf_counter
 from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
@@ -65,6 +67,7 @@ from app.services.tinea_analysis import TineaAnalysisResult
 
 
 PIPELINE_VERSION = "local-segformer-b0-contact-v2"
+progress_logger = logging.getLogger("uvicorn.error")
 CAPTURE_ORIENTATION_POLICY = "preserve_preprocessed_capture_orientation_v1"
 CHECKPOINT_FORMAT = "feetfit_plantar_full_sam_decoder_v1"
 SELECTION_POLICY = (
@@ -2214,12 +2217,28 @@ class LocalPlantarFullSamAnalyzer:
     ) -> PlantarFullSamResult:
         """Prepare the sole canvas and segment coherent pressed regions."""
 
+        queued_at = perf_counter()
         with self._inference_lock:
+            started_at = perf_counter()
             prepared = self._prepare_canvas(
                 image_bytes, side, prepared_input=prepared_input,
             )
+            prepared_at = perf_counter()
             prediction = self._predict_pressed_contact(prepared)
-            return self._finalize_canvas(prepared, prediction, request_dir)
+            predicted_at = perf_counter()
+            result = self._finalize_canvas(prepared, prediction, request_dir)
+            finished_at = perf_counter()
+            progress_logger.info(
+                "[사진 분석][%s 발바닥] 단계별 소요 시간 | 대기=%.3f초 준비=%.3f초 "
+                "추론=%.3f초 이미지생성·저장=%.3f초 전체=%.3f초",
+                "왼발" if side == "left" else "오른발",
+                started_at - queued_at,
+                prepared_at - started_at,
+                predicted_at - prepared_at,
+                finished_at - predicted_at,
+                finished_at - queued_at,
+            )
+            return result
 
 
 _plantar_foot_detector: YoloFootRoiDetector | None = None

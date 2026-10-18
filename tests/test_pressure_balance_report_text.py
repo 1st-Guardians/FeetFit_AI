@@ -353,6 +353,72 @@ class PressureBalanceGenerationTests(unittest.IsolatedAsyncioTestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    async def test_partial_distribution_wording_from_prompt_is_accepted_without_retry(self) -> None:
+        left = [2.0] * 5 + [0.5] * 7
+        right = _right_hardware(left)
+        facts = service.build_pressure_balance_facts(left, right)
+        self.assertEqual(facts["leftDistributionLevel"], "PARTLY_CONCENTRATED")
+        self.assertEqual(facts["leftDominantZones"], ["FOREFOOT"])
+        generated = {
+            "leftRegionalObservation": (
+                "왼발은 앞꿈치 구역을 중심으로 구역별 압력 비중에 일부 차이가 관찰되며 "
+                "강한 색 영역이 좁게 모여 보입니다."
+            ),
+            "rightRegionalObservation": (
+                "오른발은 앞꿈치 구역을 중심으로 구역별 압력 비중에 일부 차이가 관찰되며 "
+                "강한 색 영역이 여러 곳으로 나뉘어 보입니다."
+            ),
+            "overallBalanceObservation": (
+                "좌우 발에 전달된 압력이 비교적 고르게 분포하는 경향이 관찰됩니다."
+            ),
+            "practicalTip": VALID_ADVICE["practicalTip"],
+        }
+        create_response = AsyncMock(return_value=generated)
+        with (
+            patch.object(service, "_openai_enabled", return_value=True),
+            patch.object(service, "_create_structured_response", create_response),
+        ):
+            result = await service.generate_pressure_balance_report(
+                left_pressure_values=left, right_pressure_values=right,
+                pressure_facts=facts, left_heatmap_png=LEFT_PNG, right_heatmap_png=RIGHT_PNG,
+            )
+        create_response.assert_awaited_once()
+        self.assertEqual(result.generation_source, "OPENAI")
+        self.assertEqual(result.left_regional_observation, generated["leftRegionalObservation"])
+        self.assertEqual(result.score, facts["balanceScore"])
+
+    async def test_retry_names_failed_field_and_rule_without_echoing_generated_text(self) -> None:
+        left, right = _proportional_values()
+        facts = service.build_pressure_balance_facts(left, right)
+        rejected = {
+            **VALID_ADVICE,
+            "leftRegionalObservation": {"비밀원문표식": "not-a-string"},
+        }
+        create_response = AsyncMock(side_effect=[rejected, VALID_ADVICE])
+        with (
+            patch.object(service, "_openai_enabled", return_value=True),
+            patch.object(service, "_create_structured_response", create_response),
+            self.assertLogs(service.logger.name, level="WARNING") as logs,
+        ):
+            result = await service.generate_pressure_balance_report(
+                left_pressure_values=left, right_pressure_values=right,
+                pressure_facts=facts, left_heatmap_png=LEFT_PNG, right_heatmap_png=RIGHT_PNG,
+            )
+        self.assertEqual(create_response.await_count, 2)
+        self.assertEqual(result.generation_source, "OPENAI")
+        correction = create_response.await_args_list[1].kwargs["user_payload"]["validation_retry"]
+        self.assertEqual(correction["failed_field"], "leftRegionalObservation")
+        self.assertEqual(correction["failed_rule_code"], "TEXT_REQUIRED")
+        self.assertEqual(
+            correction["expected_grounding_sentence"],
+            service._pressure_fallback_components(facts)[0],
+        )
+        log_text = "\n".join(logs.output)
+        self.assertIn("field=leftRegionalObservation", log_text)
+        self.assertIn("rule_code=TEXT_REQUIRED", log_text)
+        self.assertNotIn("비밀원문표식", log_text)
+        self.assertNotIn("비밀원문표식", str(correction))
+
     async def test_one_high_detail_request_contains_facts_and_heatmap_reading_contract(self) -> None:
         left, right = _proportional_values()
         facts = service.build_pressure_balance_facts(left, right)
@@ -387,6 +453,9 @@ class PressureBalanceGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("leftRawPressureBySensor", str(request["user_payload"]))
         self.assertNotIn("rightRawPressureBySensor", str(request["user_payload"]))
         self.assertEqual(numeric["serverComputedPressureFacts"], original_facts)
+        self.assertIsNotNone(service._validated_pressure_advice(
+            request["user_payload"]["sentence_grounding_examples"], original_facts,
+        ))
         self.assertEqual(facts, original_facts)
         reading = request["user_payload"]["heatmap_reading_contract"]
         self.assertEqual(reading["source_role"], "spatial_visual_evidence")
@@ -494,36 +563,39 @@ class PressureBalanceGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(generated["leftRegionalObservation"], result.balance_comment)
         self.assertIn(generated["rightRegionalObservation"], result.advice[0])
 
-    async def test_visual_detail_does_not_override_measured_dominant_foot_or_zone(self) -> None:
-        left, right = _proportional_values()
+    async def test_natural_wording_and_comparison_regions_are_accepted_without_retry(self) -> None:
+        left = [2.0] * 5 + [0.5] * 7
+        right = _right_hardware(left)
         facts = service.build_pressure_balance_facts(left, right)
-        contradictions = (
-            ("overallBalanceObservation", "오른발 쪽으로 압력이 크게 치우치는 경향이 관찰됩니다."),
-            (
-                "leftRegionalObservation",
-                "왼발은 뒤꿈치에 압력이 집중되고 히트맵의 높은 강도 영역이 좁게 모여 관찰됩니다.",
+        # Regression: these natural provider sentences failed the old literal
+        # keyword checks despite describing the heatmap and measured forefoot.
+        generated = {
+            "leftRegionalObservation": (
+                "왼발은 앞꿈치 구역의 압력 비중이 상대적으로 크며 히트맵에서 고강도 색 영역이 "
+                "앞꿈치 중앙에 좁게 모여 있고 중족부와 뒤꿈치는 색이 퍼진 부분이 비교적 넓게 "
+                "분포하는 구역별 압력 비중에 일부 차이가 관찰됩니다."
             ),
-        )
-        for field, invented in contradictions:
-            with self.subTest(field=field):
-                generated = {**VALID_ADVICE, field: invented}
-                create_response = AsyncMock(return_value=generated)
-                with (
-                    patch.object(service, "_openai_enabled", return_value=True),
-                    patch.object(service.settings, "openai_report_include_images", True),
-                    patch.object(service.settings, "openai_report_fallback_enabled", True),
-                    patch.object(service, "_create_structured_response", create_response),
-                ):
-                    result = await service.generate_pressure_balance_report(
-                        left_pressure_values=left, right_pressure_values=right, pressure_facts=facts,
-                        left_heatmap_png=LEFT_PNG, right_heatmap_png=RIGHT_PNG,
-                    )
-                self.assertEqual(create_response.await_count, 5)
-                self.assertEqual(result.generation_source, "DETERMINISTIC_FALLBACK")
-                self.assertEqual(result.score, facts["balanceScore"])
-                self.assertIn("앞꿈치", result.left_regional_observation)
-                self.assertIn("왼발 쪽으로 압력이 크게 치우", result.overall_balance_observation)
-                self.assertNotIn(invented, result.balance_comment)
+            "rightRegionalObservation": (
+                "오른발은 앞꿈치 구역의 압력 비중이 상대적으로 크며 히트맵에서 강한 색 영역이 "
+                "주로 앞꿈치 중앙에 모여 있고 주변으로 색이 자연스럽게 퍼지는 양상이 확인됩니다."
+            ),
+            "overallBalanceObservation": "양발에 전달된 하중은 비슷한 수준으로 확인됩니다.",
+            "practicalTip": "현재 자세로 편안하게 서 주세요.",
+        }
+        create_response = AsyncMock(return_value=generated)
+        with (
+            patch.object(service, "_openai_enabled", return_value=True),
+            patch.object(service, "_create_structured_response", create_response),
+        ):
+            result = await service.generate_pressure_balance_report(
+                left_pressure_values=left, right_pressure_values=right, pressure_facts=facts,
+                left_heatmap_png=LEFT_PNG, right_heatmap_png=RIGHT_PNG,
+            )
+        create_response.assert_awaited_once()
+        self.assertEqual(result.generation_source, "OPENAI")
+        self.assertEqual(result.score, facts["balanceScore"])
+        self.assertEqual(result.left_regional_observation, generated["leftRegionalObservation"])
+        self.assertEqual(result.right_regional_observation, generated["rightRegionalObservation"])
 
     async def test_disabled_openai_returns_deterministic_fallback_without_request(self) -> None:
         left = [99.0] + [0.0] * 11
@@ -618,76 +690,18 @@ class PressureBalanceGenerationTests(unittest.IsolatedAsyncioTestCase):
         failed_call.assert_awaited_once()
         self.assertEqual(failed_result.score, facts["balanceScore"])
 
-    async def test_malformed_diagnostic_or_score_bearing_output_uses_whole_fallback(self) -> None:
+    async def test_missing_extra_empty_or_non_text_fields_still_use_whole_fallback(self) -> None:
         left, right = _proportional_values()
         facts = service.build_pressure_balance_facts(left, right)
-        invalid_outputs = (
+        malformed_outputs = (
             {"leftRegionalObservation": VALID_ADVICE["leftRegionalObservation"]},
             {**VALID_ADVICE, "score": 100},
-            {
-                **VALID_ADVICE,
-                "leftRegionalObservation": (
-                    "왼발은 앞꿈치 압력 비중이 가장 큰 경향이 관찰됩니다. "
-                    "다른 경향도 보입니다."
-                ),
-            },
-            {
-                **VALID_ADVICE,
-                "rightRegionalObservation": (
-                    "오른발은 앞꿈치 압력 비중이 70으로 가장 큰 경향이 관찰됩니다."
-                ),
-            },
-            {
-                **VALID_ADVICE,
-                "overallBalanceObservation": "압력 불균형으로 진단됩니다.",
-            },
-            {
-                **VALID_ADVICE,
-                "leftRegionalObservation": (
-                    "왼발은 **앞꿈치 압력 비중**이 가장 큰 경향이 관찰됩니다."
-                ),
-            },
-            {
-                **VALID_ADVICE,
-                "practicalTip": "고르게 힘을 싣는 방법은 https://example.com 에 있습니다.",
-            },
-            {
-                **VALID_ADVICE,
-                "overallBalanceObservation": (
-                    "오른발 쪽으로 압력이 크게 치우치는 경향이 관찰됩니다."
-                ),
-            },
-            {
-                **VALID_ADVICE,
-                "overallBalanceObservation": (
-                    "왼발 압력이 상대적으로 큰 경향이 관찰됩니다."
-                ),
-            },
-            {
-                **VALID_ADVICE,
-                "leftRegionalObservation": (
-                    "왼발은 뒤꿈치 구역의 압력 비중이 가장 큰 경향이 관찰됩니다."
-                ),
-            },
-            {
-                **VALID_ADVICE,
-                "leftRegionalObservation": (
-                    "왼발은 구역 압력 비중이 가장 큰 경향이 관찰됩니다."
-                ),
-            },
-            {
-                **VALID_ADVICE,
-                "practicalTip": "과내전 가능성을 줄이도록 양발에 고르게 힘을 실어 주세요.",
-            },
-            {
-                **VALID_ADVICE,
-                "leftRegionalObservation": (
-                    "왼발은 앞꿈치 구역이 정상 범위이며 압력이 집중되는 경향이 관찰됩니다."
-                ),
-            },
+            {**VALID_ADVICE, "leftRegionalObservation": ""},
+            {**VALID_ADVICE, "rightRegionalObservation": "   "},
+            {**VALID_ADVICE, "overallBalanceObservation": None},
+            {**VALID_ADVICE, "practicalTip": ["not", "text"]},
         )
-
-        for generated in invalid_outputs:
+        for generated in malformed_outputs:
             with self.subTest(generated=generated):
                 create_response = AsyncMock(return_value=generated)
                 with (
@@ -695,17 +709,13 @@ class PressureBalanceGenerationTests(unittest.IsolatedAsyncioTestCase):
                     patch.object(service, "_create_structured_response", create_response),
                 ):
                     result = await service.generate_pressure_balance_report(
-                        left_pressure_values=left,
-                        right_pressure_values=right,
-                        pressure_facts=facts,
-                        left_heatmap_png=LEFT_PNG,
-                        right_heatmap_png=RIGHT_PNG,
+                        left_pressure_values=left, right_pressure_values=right, pressure_facts=facts,
+                        left_heatmap_png=LEFT_PNG, right_heatmap_png=RIGHT_PNG,
                     )
                 self.assertEqual(create_response.await_count, 5)
+                self.assertEqual(result.generation_source, "DETERMINISTIC_FALLBACK")
+                self.assertEqual(result.generation_failure_code, "OUTPUT_VALIDATION_FAILED")
                 self.assertEqual(result.score, facts["balanceScore"])
-                self.assertIn("앞꿈치", result.left_regional_observation)
-                self.assertIn("앞꿈치", result.right_regional_observation)
-                self.assertIn("왼발 쪽으로 압력이 크게 치우", result.overall_balance_observation)
 
     async def test_each_foot_regional_observation_uses_its_own_dominant_zone(self) -> None:
         left = [0.0] * 9 + [10.0, 0.0, 0.0]
@@ -744,76 +754,55 @@ class PressureBalanceGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.advice), 2)
         self.assertEqual(result.advice[0].count("\n"), 2)
 
-    async def test_reversed_left_right_dominant_zones_use_fallback(self) -> None:
-        left = [0.0] * 9 + [10.0, 0.0, 0.0]
-        right = _right_hardware([0.0] * 5 + [10.0] + [0.0] * 6)
+    async def test_long_multiple_sentences_and_numbers_do_not_trigger_retry(self) -> None:
+        left, right = _proportional_values()
         facts = service.build_pressure_balance_facts(left, right)
-        reversed_generated = {
-            "leftRegionalObservation": (
-                "왼발은 중족부 구역의 압력 비중이 가장 큰 경향이 관찰됩니다."
-            ),
-            "rightRegionalObservation": (
-                "오른발은 뒤꿈치 구역의 압력 비중이 가장 큰 경향이 관찰됩니다."
-            ),
-            "overallBalanceObservation": (
-                "좌우 발에 전달된 압력이 비교적 고르게 분포하는 경향이 관찰됩니다."
-            ),
-            "practicalTip": "현재의 체중 분배를 유지하며 양발에 고르게 힘을 실어 주세요.",
-        }
-        create_response = AsyncMock(return_value=reversed_generated)
-
-        with (
-            patch.object(service, "_openai_enabled", return_value=True),
-            patch.object(service, "_create_structured_response", create_response),
-        ):
-            result = await service.generate_pressure_balance_report(
-                left_pressure_values=left,
-                right_pressure_values=right,
-                pressure_facts=facts,
-                left_heatmap_png=LEFT_PNG,
-                right_heatmap_png=RIGHT_PNG,
-            )
-
-        self.assertEqual(create_response.await_count, 5)
-        self.assertIn("뒤꿈치", result.left_regional_observation)
-        self.assertIn("중족부", result.right_regional_observation)
-
-    async def test_balanced_facts_reject_invented_excessive_one_sided_claim(self) -> None:
-        left = [1.0] * 12
-        right = [1.0] * 12
-        facts = service.build_pressure_balance_facts(left, right)
-        generated = {
-            "leftRegionalObservation": (
-                "왼발은 앞꿈치 구역의 압력 비중이 가장 큰 경향이 관찰됩니다."
-            ),
-            "rightRegionalObservation": (
-                "오른발은 앞꿈치 구역의 압력 비중이 가장 큰 경향이 관찰됩니다."
-            ),
-            "overallBalanceObservation": (
-                "왼발 쪽으로 압력이 크게 치우치는 경향이 관찰됩니다."
-            ),
-            "practicalTip": "서 있을 때 양발에 천천히 고르게 힘을 실어 주세요.",
-        }
+        original_facts = copy.deepcopy(facts)
+        description = (
+            "왼발에 전달된 하중 비중은 70퍼센트로 오른발보다 큽니다. "
+            "히트맵에서는 앞꿈치 부근의 강한 색 영역이 좁게 모여 있고 주변으로 색이 점차 "
+            "옅어지는 양상을 확인할 수 있습니다. "
+            "구역별 수치와 히트맵의 표시 강도는 계산 기준이 다르므로 색의 진하기만으로 "
+            "좌우 총하중을 직접 비교하기보다는 서버가 계산한 비율을 함께 살펴보는 것이 "
+            "이번 측정 결과를 이해하는 데 도움이 됩니다."
+        )
+        self.assertGreater(len(description), 180)
+        generated = {**VALID_ADVICE, "leftRegionalObservation": description}
         create_response = AsyncMock(return_value=generated)
-
         with (
             patch.object(service, "_openai_enabled", return_value=True),
             patch.object(service, "_create_structured_response", create_response),
         ):
             result = await service.generate_pressure_balance_report(
-                left_pressure_values=left,
-                right_pressure_values=right,
-                pressure_facts=facts,
-                left_heatmap_png=LEFT_PNG,
-                right_heatmap_png=RIGHT_PNG,
+                left_pressure_values=left, right_pressure_values=right, pressure_facts=facts,
+                left_heatmap_png=LEFT_PNG, right_heatmap_png=RIGHT_PNG,
             )
+        create_response.assert_awaited_once()
+        self.assertEqual(result.generation_source, "OPENAI")
+        self.assertEqual(result.left_regional_observation, description)
+        self.assertEqual(result.score, original_facts["balanceScore"])
+        self.assertEqual(facts, original_facts)
 
-        self.assertEqual(create_response.await_count, 5)
-        self.assertEqual(result.score, 100.0)
-        self.assertIn("좌우 발", result.overall_balance_observation)
-        self.assertNotIn("크게 치우", result.overall_balance_observation)
+    async def test_empty_text_raises_with_field_metadata_when_fallback_is_disabled(self) -> None:
+        left, right = _proportional_values()
+        facts = service.build_pressure_balance_facts(left, right)
+        create_response = AsyncMock(return_value={**VALID_ADVICE, "practicalTip": " "})
+        with (
+            patch.object(service, "_openai_enabled", return_value=True),
+            patch.object(service.settings, "openai_report_max_attempts", 1),
+            patch.object(service.settings, "openai_report_fallback_enabled", False),
+            patch.object(service, "_create_structured_response", create_response),
+        ):
+            with self.assertRaises(service.PressureOutputValidationError) as failure:
+                await service.generate_pressure_balance_report(
+                    left_pressure_values=left, right_pressure_values=right, pressure_facts=facts,
+                    left_heatmap_png=LEFT_PNG, right_heatmap_png=RIGHT_PNG,
+                )
+        create_response.assert_awaited_once()
+        self.assertEqual(failure.exception.field, "practicalTip")
+        self.assertEqual(failure.exception.rule_code, "TEXT_REQUIRED")
 
-    async def test_broad_distribution_wording_is_accepted_only_with_supporting_facts(self) -> None:
+    async def test_broad_distribution_prompt_and_provider_text_are_preserved(self) -> None:
         left = [1.0] * 12
         right = [1.0] * 12
         facts = service.build_pressure_balance_facts(left, right)

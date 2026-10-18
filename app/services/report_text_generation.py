@@ -3042,152 +3042,49 @@ def _pressure_fallback_components(
     return left_regional, right_regional, overall_observation, practical_tip
 
 
-_PRESSURE_DIAGNOSTIC_PATTERN = re.compile(
-    r"진단|확진|판정|질환|비정상|정상|(?:불균형|과부하)\s*(?:입니다|으로\s*확정)"
-)
-_PRESSURE_FORBIDDEN_INFERENCE_PATTERN = re.compile(
-    r"아치|내측|외측|안쪽|바깥쪽|과내전|과외전|평발|요족"
-)
+class PressureOutputValidationError(ReportGenerationError):
+    """A rejected field and rule, without retaining the generated patient text."""
+
+    def __init__(self, field: str, rule_code: str) -> None:
+        self.field = field
+        self.rule_code = rule_code
+        super().__init__("OUTPUT_VALIDATION_FAILED")
 
 
-def _validated_single_pressure_sentence(value: Any) -> str | None:
-    parts = _full_report_sentence_list(value)
-    if parts is None or len(parts) != 1 or len(parts[0]) > 180:
-        return None
-    return parts[0]
-
-
-def _validated_regional_pressure_observation(
+def _require_pressure_advice(
     value: Any,
-    *,
-    side_label: str,
-    dominant_zones: list[str],
-    distribution_level: str,
-) -> str | None:
-    observation = _validated_single_pressure_sentence(value)
-    if observation is None or not observation.startswith(side_label):
-        return None
-    if not any(term in observation for term in ("압력", "하중", "체중")):
-        return None
-    if not any(term in observation for term in ("관찰", "경향", "보입니다")):
-        return None
-    if not any(
-        term in observation
-        for term in (
-            "상대적으로",
-            "가장",
-            "함께 큰",
-            "집중",
-            "두드러",
-            "비교적 고르게",
-        )
-    ):
-        return None
+    pressure_facts: dict[str, Any],
+) -> tuple[str, str, str, str]:
+    """Validate required text fields only; server calculations own the metrics.
 
-    required_labels = {
-        _PRESSURE_ZONE_LABELS[zone]
-        for zone in dominant_zones
-    }
-    if not required_labels or any(label not in observation for label in required_labels):
-        return None
-    non_dominant_labels = set(_PRESSURE_ZONE_LABELS.values()) - required_labels
-    if any(label in observation for label in non_dominant_labels):
-        return None
-    if distribution_level == "BROADLY_DISTRIBUTED" and not (
-        "비교적 고르게" in observation and "분산" in observation
-    ):
-        return None
-    if distribution_level == "PARTLY_CONCENTRATED" and not any(
-        term in observation for term in ("일부 차이", "다소 집중")
-    ):
-        return None
-    if distribution_level == "CONCENTRATED" and not any(
-        term in observation for term in ("집중", "두드러")
-    ):
-        return None
-    return observation
+    Wording, sentence count, and zone descriptions are prompt instructions, not
+    reasons to discard a completed response and repeat the provider request.
+    """
+    fields = (
+        "leftRegionalObservation",
+        "rightRegionalObservation",
+        "overallBalanceObservation",
+        "practicalTip",
+    )
+    if not isinstance(value, dict) or set(value) != set(fields):
+        raise PressureOutputValidationError("response", "REQUIRED_FIELDS_MISMATCH")
+    cleaned: list[str] = []
+    for field in fields:
+        text = value[field]
+        if not isinstance(text, str) or not text.strip():
+            raise PressureOutputValidationError(field, "TEXT_REQUIRED")
+        cleaned.append(text.strip())
+    return cleaned[0], cleaned[1], cleaned[2], cleaned[3]
 
 
 def _validated_pressure_advice(
     value: Any,
     pressure_facts: dict[str, Any],
 ) -> tuple[str, str, str, str] | None:
-    expected_keys = {
-        "leftRegionalObservation",
-        "rightRegionalObservation",
-        "overallBalanceObservation",
-        "practicalTip",
-    }
-    if not isinstance(value, dict) or set(value) != expected_keys:
+    try:
+        return _require_pressure_advice(value, pressure_facts)
+    except PressureOutputValidationError:
         return None
-    left_regional = _validated_regional_pressure_observation(
-        value.get("leftRegionalObservation"),
-        side_label="왼발",
-        dominant_zones=pressure_facts["leftDominantZones"],
-        distribution_level=pressure_facts["leftDistributionLevel"],
-    )
-    right_regional = _validated_regional_pressure_observation(
-        value.get("rightRegionalObservation"),
-        side_label="오른발",
-        dominant_zones=pressure_facts["rightDominantZones"],
-        distribution_level=pressure_facts["rightDistributionLevel"],
-    )
-    overall_observation = _validated_single_pressure_sentence(
-        value.get("overallBalanceObservation")
-    )
-    practical_tip = _validated_single_pressure_sentence(value.get("practicalTip"))
-    if any(
-        item is None
-        for item in (left_regional, right_regional, overall_observation, practical_tip)
-    ):
-        return None
-    combined = "\n".join(
-        (left_regional, right_regional, overall_observation, practical_tip)
-    )
-    if (
-        _PRESSURE_DIAGNOSTIC_PATTERN.search(combined)
-        or _PRESSURE_FORBIDDEN_INFERENCE_PATTERN.search(combined)
-    ):
-        return None
-    if not any(term in overall_observation for term in ("압력", "하중", "체중")):
-        return None
-    if not any(
-        term in overall_observation for term in ("관찰", "경향", "보입니다")
-    ):
-        return None
-    if any(
-        zone_label in overall_observation
-        for zone_label in _PRESSURE_ZONE_LABELS.values()
-    ):
-        return None
-    dominant_foot = pressure_facts["dominantFoot"]
-    if dominant_foot == "LEFT" and not overall_observation.startswith("왼발"):
-        return None
-    if dominant_foot == "RIGHT" and not overall_observation.startswith("오른발"):
-        return None
-    if dominant_foot == "BALANCED" and not any(
-        overall_observation.startswith(term) for term in ("좌우", "양발")
-    ):
-        return None
-    strong_terms = ("크게 치우", "뚜렷하게 치우", "과도하게 치우", "매우 큰")
-    strongly_one_sided = pressure_facts["loadBalanceLevel"] in {
-        "STRONG_ONE_SIDED",
-        "EXTREME_ONE_SIDED",
-    }
-    if strongly_one_sided and not any(
-        term in overall_observation for term in strong_terms
-    ):
-        return None
-    if not strongly_one_sided and any(
-        term in overall_observation for term in strong_terms
-    ):
-        return None
-    if not any(
-        term in practical_tip
-        for term in ("유지", "고르게", "천천히", "분배", "실어", "해주세요")
-    ):
-        return None
-    return left_regional, right_regional, overall_observation, practical_tip
 
 
 async def generate_pressure_balance_report(
@@ -3249,6 +3146,20 @@ async def generate_pressure_balance_report(
             "numeric_source_of_truth": {
                 "serverComputedPressureFacts": expected_facts,
             },
+            "sentence_grounding_examples": {
+                "leftRegionalObservation": fallback_left_regional,
+                "rightRegionalObservation": fallback_right_regional,
+                "overallBalanceObservation": fallback_overall,
+                "practicalTip": fallback_tip,
+            },
+            "sentence_grounding_contract": (
+                "sentence_grounding_examples는 서버 수치와 일치하는 기본 문장이다. "
+                "기본 문장의 수치적 의미를 유지하면서 자연스러운 한국어로 바꾸거나 "
+                "실제 히트맵에서 확인한 색의 모임·퍼짐을 덧붙일 수 있다. 특정 어휘나 "
+                "문장 시작 표현을 그대로 복사할 필요는 없다. 시각적 특징이 불명확하면 "
+                "이를 만들어내지 않고 한계를 표현한다. 좌우 총하중과 구역별 비중은 "
+                "서버 계산값을 따르고 실천 팁은 그 결과에 맞는 체중 분배 행동을 설명한다."
+            ),
             "score_authority_contract": (
                 "balanceScore, bilateralBalanceScore, leftDistributionScore, "
                 "rightDistributionScore와 scoreComponents/scoreWeights/scoreFormula는 서버가 "
@@ -3380,6 +3291,8 @@ async def generate_pressure_balance_report(
         }
         system_prompt = (
                 "당신은 좌우 발 압력 센서와 히트맵을 함께 분석하는 한국어 리포트 작성자다. "
+                "sentence_grounding_examples의 수치적 의미와 sentence_grounding_contract를 "
+                "따르고 각 발 문장에 확인 가능한 시각적 관찰을 자연스러운 표현으로 결합한다. "
                 "먼저 두 히트맵을 각각 자세히 확인하고, 각 발의 강한 색이 국소적으로 "
                 "모이는지, 여러 곳으로 나뉘는지, 넓게 이어지는지를 관찰한다. "
                 "이 시각적 특징을 각 발의 구역 관찰에 구체적으로 반영하고 서버 계산 "
@@ -3399,18 +3312,23 @@ async def generate_pressure_balance_report(
         )
         request_budget = _ReportRequestBudget.for_report()
         maximum_attempts = request_budget.maximum_attempts
+        validation_error: PressureOutputValidationError | None = None
         for validation_attempt in range(1, maximum_attempts + 1):
             attempt_payload = dict(payload)
-            if validation_attempt > 1:
+            if validation_error is not None:
                 attempt_payload["validation_retry"] = {
                     "attempt": max(validation_attempt, request_budget.attempts + 1),
                     "maximum_attempts": maximum_attempts,
-                    "failed_rule_code": "OUTPUT_VALIDATION_FAILED",
+                    "failed_field": validation_error.field,
+                    "failed_rule_code": validation_error.rule_code,
+                    "expected_grounding_sentence": payload["sentence_grounding_examples"].get(
+                        validation_error.field,
+                    ),
                     "instruction": (
-                        "이전 응답은 출력 규칙에 맞지 않았다. 같은 수치 facts와 히트맵을 "
-                        "사용해 전체 JSON을 다시 작성한다. 왼발·오른발 우세 구역과 분산도, "
-                        "좌우 총하중 방향·강도를 서버 값과 일치시키고 각 필드를 숫자나 "
-                        "진단 표현 없이 정확히 한 문장으로 작성한다."
+                        "failed_field가 비어 있거나 문자열이 아니거나 필수 필드 구성이 잘못되었다. "
+                        "필수 네 필드를 모두 비어 있지 않은 문자열로 작성해 전체 JSON을 다시 보낸다. "
+                        "같은 수치 facts와 히트맵을 사용하고 expected_grounding_sentence의 "
+                        "수치적 의미를 참고하되 자연스러운 문장으로 설명한다."
                     ),
                 }
             data = await _create_structured_response(
@@ -3426,17 +3344,22 @@ async def generate_pressure_balance_report(
                 max_output_tokens=720,
                 request_budget=request_budget,
             )
-            validated = _validated_pressure_advice(data, expected_facts)
-            if validated is not None:
+            try:
+                validated = _require_pressure_advice(data, expected_facts)
                 break
+            except PressureOutputValidationError as exc:
+                validation_error = exc
             if (validation_attempt >= maximum_attempts
                     or request_budget.attempts >= maximum_attempts):
-                raise ReportGenerationError("OUTPUT_VALIDATION_FAILED")
+                raise validation_error
             logger.warning(
-                "GPT pressure text validation failed; retrying. attempt=%s max_attempts=%s code=%s",
+                "GPT pressure text validation failed; retrying. attempt=%s max_attempts=%s "
+                "code=%s field=%s rule_code=%s",
                 max(validation_attempt, request_budget.attempts),
                 maximum_attempts,
                 "OUTPUT_VALIDATION_FAILED",
+                validation_error.field,
+                validation_error.rule_code,
             )
         else:
             raise AssertionError("Pressure output retry loop exited unexpectedly.")
@@ -3450,8 +3373,10 @@ async def generate_pressure_balance_report(
         )
     except Exception as exc:
         logger.warning(
-            "GPT pressure balance report generation failed. code=%s",
+            "GPT pressure balance report generation failed. code=%s field=%s rule_code=%s",
             _report_failure_code(exc),
+            exc.field if isinstance(exc, PressureOutputValidationError) else None,
+            exc.rule_code if isinstance(exc, PressureOutputValidationError) else None,
         )
         if not settings.openai_report_fallback_enabled:
             raise
