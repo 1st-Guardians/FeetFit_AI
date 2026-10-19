@@ -20,7 +20,10 @@ from app.core.weights import weights
 from app.tinea.segmentation import FungalSegmenter, PREPROCESSING_POLICY
 from app.services.wound_analysis import WoundPrediction, get_wound_analyzer
 from app.services.tinea_policy import (
+    LESION_AREA_SCORE_SENSITIVITY,
+    LESION_PRESENT_SAFETY_SCORE,
     TINEA_SIGNAL_SAFETY_SCORE_CUTOFF,
+    lesion_safety_score_from_area,
     safety_score_indicates_tinea_signal,
 )
 
@@ -402,6 +405,7 @@ def validate_precomputed_foot_mask(
 
 
 def score_from_burden(burden: float, sensitivity: float) -> float:
+    """Legacy signal gate, kept separate from the displayed area-based score."""
     score = 100.0 * float(np.exp(-sensitivity * max(0.0, burden)))
     return round(float(np.clip(score, 0.0, 100.0)), 2)
 
@@ -423,6 +427,7 @@ def class_score_metrics(
             "confidence_weighted_ratio": 0.0,
             "burden": 0.0,
             "score": 100.0,
+            "detection_score": 100.0,
         }
 
     hard_weight = float(np.clip(settings.score_hard_weight, 0.0, 1.0))
@@ -441,7 +446,8 @@ def class_score_metrics(
         "pixel_ratio": round(float(pixel_ratio), 6),
         "confidence_weighted_ratio": round(confidence_weighted_ratio, 6),
         "burden": round(float(burden), 6),
-        "score": score_from_burden(burden, settings.score_sensitivity),
+        "score": lesion_safety_score_from_area(pixel_ratio),
+        "detection_score": score_from_burden(burden, settings.score_sensitivity),
     }
 
 
@@ -492,12 +498,14 @@ def compute_health_scores(
         "fungal_confidence_weighted_ratio": fungal["confidence_weighted_ratio"],
         "fungal_burden": fungal["burden"],
         "fungal_score": fungal["score"],
+        "fungal_detection_score": fungal["detection_score"],
         "fungal_score_label": score_label(fungal["score"]),
         "inflammation_pixels_in_foot": inflammation["pixels"],
         "inflammation_pixel_ratio": inflammation["pixel_ratio"],
         "inflammation_confidence_weighted_ratio": inflammation["confidence_weighted_ratio"],
         "inflammation_burden": inflammation["burden"],
         "inflammation_score": inflammation["score"],
+        "inflammation_detection_score": inflammation["detection_score"],
         "inflammation_score_label": (
             score_label(inflammation["score"])
             if inflammation_enabled else "not_analyzed_forced_clear"
@@ -524,11 +532,10 @@ def build_authoritative_analysis_masks(
 ) -> tuple[np.ndarray, np.ndarray, dict, dict]:
     """Return the only class masks allowed to drive scores or visual output.
 
-    Thresholded components first pass the shared minimum-area filter. A class
-    whose rounded preliminary safety score is still in the report's no-signal
-    band is then suppressed entirely. Scores are recomputed from the gated
-    masks so pixels, regions, images, and final classification all describe the
-    same evidence.
+    Thresholded components first pass the shared minimum-area filter and the
+    existing confidence/area signal gate. The new displayed score is separate
+    from that gate, so scoring changes do not change fungal detection. Display
+    scores are recomputed from the accepted masks used by images and reports.
     """
 
     # Also gate precomputed candidate masks; callers cannot bypass the switch
@@ -550,11 +557,11 @@ def build_authoritative_analysis_masks(
         inflammation_threshold=inflammation_threshold,
         restrict_fungal_confidence_to_mask=restrict_fungal_confidence_to_mask,
     )
-    fungal_signal_detected = safety_score_indicates_tinea_signal(
-        candidate_metrics["fungal_score"]
+    fungal_signal_detected = bool(candidate_fungal.any()) and safety_score_indicates_tinea_signal(
+        candidate_metrics["fungal_detection_score"]
     )
-    inflammation_signal_detected = safety_score_indicates_tinea_signal(
-        candidate_metrics["inflammation_score"]
+    inflammation_signal_detected = bool(candidate_inflammation.any()) and safety_score_indicates_tinea_signal(
+        candidate_metrics["inflammation_detection_score"]
     )
 
     authoritative_fungal = (
@@ -579,12 +586,17 @@ def build_authoritative_analysis_masks(
     )
     gate_metrics = {
         "signal_safety_score_cutoff": TINEA_SIGNAL_SAFETY_SCORE_CUTOFF,
+        "signal_score_source": "legacy_confidence_area_detection_score",
         "fungal_candidate_pixels": int(candidate_fungal.sum()),
         "inflammation_candidate_pixels": int(candidate_inflammation.sum()),
         "fungal_candidate_safety_score": candidate_metrics["fungal_score"],
         "inflammation_candidate_safety_score": candidate_metrics[
             "inflammation_score"
         ],
+        "fungal_candidate_detection_score": candidate_metrics["fungal_detection_score"],
+        "inflammation_candidate_detection_score": candidate_metrics["inflammation_detection_score"],
+        "lesion_present_safety_score": LESION_PRESENT_SAFETY_SCORE,
+        "lesion_area_score_sensitivity": LESION_AREA_SCORE_SENSITIVITY,
         "fungal_signal_detected": fungal_signal_detected,
         "inflammation_signal_detected": inflammation_signal_detected,
         "inflammation_analysis_enabled": settings.tinea_inflammation_enabled,
@@ -635,9 +647,9 @@ def build_wound_skin_metrics(
         "wound_area_ratio": values["pixel_ratio"],
         "wound_confidence_weighted_ratio": values["confidence_weighted_ratio"],
         "wound_safety_score": values["score"],
-        "wound_score_formula": "100 * exp(-sensitivity * (hard_weight * area_ratio + (1-hard_weight) * confidence_excess_ratio))",
-        "wound_score_hard_weight": float(np.clip(settings.score_hard_weight, 0, 1)),
-        "wound_score_sensitivity": float(settings.score_sensitivity),
+        "wound_score_formula": "100 if no final lesion else 65 * exp(-7 * final_area_ratio)",
+        "wound_score_present_baseline": LESION_PRESENT_SAFETY_SCORE,
+        "wound_score_sensitivity": LESION_AREA_SCORE_SENSITIVITY,
         "wound_mask_policy": "final_probability_threshold_intersect_original_foot_only",
         "score_reliability": "normal" if foot_found else "low_full_image_fallback",
         "foot_area_pixels": int((foot_mask > 0).sum()),

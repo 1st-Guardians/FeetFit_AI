@@ -126,7 +126,7 @@ class WoundSkinIntegrationTests(unittest.TestCase):
     def prediction(self, probability):
         return wound.WoundPrediction(probability, probability >= 0.5, probability, {"wound_threshold": 0.5, "wound_model": "wound_segformer_b0"})
 
-    def test_score_uses_final_inside_foot_area_and_confidence_only(self):
+    def test_score_uses_final_inside_foot_area_and_keeps_confidence_as_metadata(self):
         foot = np.zeros((100, 100), dtype=np.uint8)
         foot[:50] = 255
         probability = np.full(foot.shape, 0.49, dtype=np.float32)
@@ -137,17 +137,31 @@ class WoundSkinIntegrationTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["wound_area_ratio"], 0.02)
         self.assertAlmostEqual(metrics["wound_confidence_weighted_ratio"], 0.01)
         self.assertAlmostEqual(metrics["inflammation_burden"], 0.017)
-        self.assertAlmostEqual(metrics["wound_safety_score"], round(100 * np.exp(-7 * 0.017), 2))
+        self.assertEqual(metrics["wound_safety_score"], 56.51)
 
-    def test_tiny_final_wound_is_retained_even_with_high_safety_score(self):
+    def test_tiny_final_wound_is_retained_and_starts_in_sixties(self):
         prob = np.zeros((100, 100), dtype=np.float32)
         prob[10, 10] = 0.99
         mask, metrics = skin.build_wound_skin_metrics(self.prediction(prob), np.ones_like(prob), True)
         self.assertTrue(mask[10, 10])
         self.assertTrue(metrics["wound_detected"])
-        self.assertGreater(metrics["wound_safety_score"], 95)
+        self.assertEqual(metrics["wound_safety_score"], 64.95)
         regions = skin.summarize_suspicion_regions(mask, prob, np.ones_like(prob), 0.9, "left", min_area_pixels=1)
         self.assertEqual(len(regions), 1)
+
+    def test_larger_skin_regions_lower_score_independently_of_prediction_strength(self):
+        small_probability = np.zeros((100, 100), dtype=np.float32)
+        small_probability[:10, :10] = 0.99
+        large_probability = np.zeros_like(small_probability)
+        large_probability[:30, :30] = 0.51
+        _, small = skin.build_wound_skin_metrics(
+            self.prediction(small_probability), np.ones_like(small_probability), True,
+        )
+        _, large = skin.build_wound_skin_metrics(
+            self.prediction(large_probability), np.ones_like(large_probability), True,
+        )
+        self.assertEqual(small["wound_safety_score"], 60.61)
+        self.assertLess(large["wound_safety_score"], small["wound_safety_score"])
 
     def test_empty_mask_has_zero_penalty(self):
         p = np.full((20, 20), 0.49, dtype=np.float32)

@@ -1818,8 +1818,8 @@ class PhotoAnalysisRouteTests(unittest.TestCase):
                 self.assertEqual(generator_kwargs["right_plantar_raw_image_bytes"], b"raw-right-plantar")
                 tinea_facts = generator_kwargs["facts"]["tinea_pedis"]
                 self.assertEqual(tinea_facts["final_scores"], {
-                    "fungal_suspicion_safety_score": 91,
-                    "skin_reaction_safety_score": 93,
+                    "fungal_suspicion_safety_score": 89,
+                    "skin_reaction_safety_score": 91,
                 })
                 if persisted_mode is not None:
                     self.assertIs(tinea_facts["dorsal"]["left"]["inflammation_analysis_enabled"], False)
@@ -1870,8 +1870,8 @@ class PhotoAnalysisRouteTests(unittest.TestCase):
         self.assertEqual(
             body["analysis"]["tineaPedis"],
             {
-                "fungalSuspicionSafetyScore": 91,
-                "skinReactionSafetyScore": 93,
+                "fungalSuspicionSafetyScore": 89,
+                "skinReactionSafetyScore": 91,
             },
         )
         expected_completed = (
@@ -1931,8 +1931,8 @@ class PhotoAnalysisRouteTests(unittest.TestCase):
         self.assertEqual(
             generator_kwargs["facts"]["tinea_pedis"]["final_scores"],
             {
-                "fungal_suspicion_safety_score": 91,
-                "skin_reaction_safety_score": 93,
+                "fungal_suspicion_safety_score": 89,
+                "skin_reaction_safety_score": 91,
             },
         )
         self.assertNotIn("metrics", generator_kwargs["facts"])
@@ -1995,8 +1995,8 @@ class PhotoAnalysisRouteTests(unittest.TestCase):
             },
         )
         tinea_json = json.loads(tinea_files["request"][1])
-        self.assertEqual(tinea_json["fungalSuspicionSafetyScore"], 91)
-        self.assertEqual(tinea_json["skinReactionSafetyScore"], 93)
+        self.assertEqual(tinea_json["fungalSuspicionSafetyScore"], 89)
+        self.assertEqual(tinea_json["skinReactionSafetyScore"], 91)
         self.assertEqual(tinea_files["suspiciousAreaMapImage"][1], b"dorsal-map")
         self.assertEqual(tinea_files["originalFootImage"][1], b"dorsal-overlay")
         self.assertEqual(tinea_files["soleSuspiciousAreaMapImage"][1], b"sole-clean")
@@ -2027,8 +2027,8 @@ class PhotoAnalysisRouteTests(unittest.TestCase):
             {"HALLUX_VALGUS", "ATHLETES_FOOT", "SKIN_IRRITATION"},
         )
         self.assertEqual(summary_json["HALLUX_VALGUS"]["score"], 76.5)
-        self.assertEqual(summary_json["ATHLETES_FOOT"]["score"], 91.0)
-        self.assertEqual(summary_json["SKIN_IRRITATION"]["score"], 93.0)
+        self.assertEqual(summary_json["ATHLETES_FOOT"]["score"], 89.0)
+        self.assertEqual(summary_json["SKIN_IRRITATION"]["score"], 91.0)
         for metric_type, payload in summary_json.items():
             self.assertEqual(payload["measurementSessionId"], 34)
             self.assertEqual(payload["advice"], list(TEXTS.metric_advice[metric_type]))
@@ -2091,6 +2091,35 @@ class PhotoAnalysisRouteTests(unittest.TestCase):
                 ("end", "HALLUX_VALGUS"),
             ],
         )
+
+    def test_unilateral_lesions_keep_the_lower_score_in_facts_core_report_and_summary(self) -> None:
+        integrated = replace(self.integrated, tinea={
+            "left": replace(self.integrated.tinea["left"], fungal_safety_score=65,
+                            skin_reaction_safety_score=61),
+            "right": replace(self.integrated.tinea["right"], fungal_safety_score=100,
+                             skin_reaction_safety_score=100),
+        })
+        backend = _Backend()
+        with ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in self._patch_pipeline(backend, integrated=integrated)]
+            response = self._post()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["analysis"]["tineaPedis"], {
+            "fungalSuspicionSafetyScore": 65, "skinReactionSafetyScore": 61,
+        })
+        facts = mocks[7].await_args.kwargs["facts"]["tinea_pedis"]["final_scores"]
+        self.assertEqual(facts, {"fungal_suspicion_safety_score": 65,
+                                "skin_reaction_safety_score": 61})
+        upload = next(kwargs["files"] for url, kwargs in backend.calls
+                      if url == route.settings.tinea_report_endpoint)
+        saved = json.loads(upload["request"][1])
+        self.assertEqual(saved["fungalSuspicionSafetyScore"], 65)
+        self.assertEqual(saved["skinReactionSafetyScore"], 61)
+        summaries = {kwargs["json"]["metricType"]: kwargs["json"]["score"]
+                     for url, kwargs in backend.calls
+                     if url == route.settings.summary_report_endpoint}
+        self.assertEqual(summaries["ATHLETES_FOOT"], 65)
+        self.assertEqual(summaries["SKIN_IRRITATION"], 61)
 
     def test_success_emits_safe_progress_for_every_pipeline_area(self) -> None:
         upstream_sentinel = "UPSTREAM_BODY_MUST_NOT_BE_LOGGED"

@@ -880,7 +880,7 @@ def _complete_sole_pair(
     return sole_left_result is not None
 
 
-def _average_score_from_results(results: tuple[Any, ...], attr_name: str) -> int:
+def _aggregate_score_from_results(results: tuple[Any, ...], attr_name: str) -> int:
     values = []
     for result in results:
         value = getattr(result, attr_name, None)
@@ -889,8 +889,8 @@ def _average_score_from_results(results: tuple[Any, ...], attr_name: str) -> int
     return aggregate_tinea_safety_scores(values or (100.0,))
 
 
-def _average_score(left_result: Any, right_result: Any, attr_name: str) -> int:
-    return _average_score_from_results((left_result, right_result), attr_name)
+def _aggregate_score(left_result: Any, right_result: Any, attr_name: str) -> int:
+    return _aggregate_score_from_results((left_result, right_result), attr_name)
 
 
 def _score_intensity(score: int) -> str:
@@ -915,8 +915,8 @@ def build_fallback_tinea_report_text(
     inflammation_disabled = _inflammation_reporting_disabled(
         left_result, right_result, sole_left_result, sole_right_result,
     )
-    fungal_score = _average_score(left_result, right_result, "fungal_safety_score")
-    skin_score = _average_score(left_result, right_result, "skin_reaction_safety_score")
+    fungal_score = _aggregate_score(left_result, right_result, "fungal_safety_score")
+    skin_score = _aggregate_score(left_result, right_result, "skin_reaction_safety_score")
     fungal_locations = _location_text(left_result, right_result, "fungal_regions")
     skin_locations = _location_text(left_result, right_result, "inflammation_regions")
     fungal_signal = bool(fungal_locations) or safety_score_indicates_tinea_signal(
@@ -2107,7 +2107,8 @@ async def generate_full_photo_analysis_texts(
         "fungal_suspicion_safety_score와 skin_reaction_safety_score는 모두 안전 점수다. "
         "백 점에 가까울수록 의심 신호가 적고 안전하며, 영 점에 가까울수록 의심 신호가 "
         "강하다. 낮은 안전 점수를 낮은 위험이나 건강한 상태로 반대로 해석하지 않는다. "
-        "final_scores는 양발 발등 두 결과의 산술평균을 서버가 확정한 값이며, "
+        "final_scores는 항목별로 양발 발등 중 더 낮은 안전 점수를 서버가 확정한 값이며, "
+        "의심 영역 검출 시 기준 안전 점수에서 시작해 최종 의심 면적 비율이 클수록 낮아진다. "
         "각 부위 점수와 의심 영역을 함께 반영해 설명의 강도를 일치시킨다. "
         "응답에는 새 숫자 점수나 숫자 수치를 쓰지 않고 정성적 관찰만 작성한다. "
         "진단·확진·판정 표현을 사용하지 말고 관찰된 경향을 중심으로 설명한다. 이미지의 "
@@ -2115,7 +2116,7 @@ async def generate_full_photo_analysis_texts(
         "무좀과 피부 자극 반응은 발등 근거만 고려한다. 이 피부 설명에는 발바닥을 언급하지 않는다. "
         "skin_assessment_source가 wound_segformer_b0 또는 custom_swin_tiny_unet이면 피부 항목은 상처 분할 모델의 결과다. "
         "상처 검출 부위를 설명하고 감염이나 염증을 확진하지 않는다. wound_detected가 true이면 "
-        "평균 안전 점수가 높더라도 작은 상처 검출을 없는 것으로 바꾸지 않는다. "
+        "작은 상처 검출을 없는 것으로 바꾸지 않는다. "
         "segformer_fungal_only_segformer_wound는 양발 발등에서 무좀 전용 SegFormer-B2 Student와 독립 SegFormer 상처 모델을 분석한 상태다. "
         "무좀 모델은 무좀 한 클래스만 예측하며 피부/염증은 독립 상처 모델의 결과를 사용한다. "
         + _FUNGAL_WOUND_REPORT_INSTRUCTIONS + " "
