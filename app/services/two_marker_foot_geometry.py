@@ -24,7 +24,7 @@ class RigGeometry:
     """Physical dimensions of the ID 1/4 centre-column measurement rig."""
 
     marker_size_mm: float = 20.0
-    marker_edge_gap_mm: float = 175.0
+    marker_edge_gap_mm: float = 170.0
     heel_offset_mm: float = 114.0
     board_width_mm: float = 365.0
     marker_center_x_mm: float = 181.0
@@ -62,7 +62,7 @@ class RigGeometry:
 
     @property
     def marker_center_distance_mm(self) -> float:
-        # The declared 175 mm is black-edge to black-edge, not centre spacing.
+        # The gap is measured black-edge to black-edge, not centre spacing.
         return float(self.marker_edge_gap_mm + self.marker_size_mm)
 
     @property

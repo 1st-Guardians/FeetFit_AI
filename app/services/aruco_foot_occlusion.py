@@ -186,7 +186,7 @@ def _project_missing_marker_candidates(
     candidates = [baseline]
     # Include every single-corner axial and diagonal +/-0.5 px perturbation.
     # These sensitivity probes are not a statistical uncertainty guarantee.
-    # At the rig's 195 mm span even a subpixel change can move the projection
+    # Across the two-marker span even a subpixel change can move the projection
     # tens of pixels, so checking only the baseline would be overconfident.
     for corner in range(4):
         for dx, dy in (

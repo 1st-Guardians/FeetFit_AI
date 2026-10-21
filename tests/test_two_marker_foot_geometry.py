@@ -21,24 +21,24 @@ class RigGeometryContractTests(unittest.TestCase):
 
         self.assertEqual(REQUIRED_MARKER_IDS, (1, 4))
         self.assertEqual(geometry.marker_size_mm, 20.0)
-        self.assertEqual(geometry.marker_edge_gap_mm, 175.0)
-        self.assertEqual(geometry.marker_center_distance_mm, 195.0)
+        self.assertEqual(geometry.marker_edge_gap_mm, 170.0)
+        self.assertEqual(geometry.marker_center_distance_mm, 190.0)
         self.assertEqual(geometry.world_points_mm[1], (181.0, 25.0))
-        self.assertEqual(geometry.world_points_mm[4], (181.0, 220.0))
-        self.assertEqual(geometry.reference_edge_y_mm, 230.0)
+        self.assertEqual(geometry.world_points_mm[4], (181.0, 215.0))
+        self.assertEqual(geometry.reference_edge_y_mm, 225.0)
         self.assertEqual(geometry.heel_offset_mm, 114.0)
-        self.assertEqual(geometry.heel_line_y_mm, 344.0)
-        self.assertEqual(geometry.board_height_mm, 354.0)
+        self.assertEqual(geometry.heel_line_y_mm, 339.0)
+        self.assertEqual(geometry.board_height_mm, 349.0)
 
         payload = geometry.to_dict()
         self.assertEqual(payload["marker_ids"], [1, 4])
         self.assertEqual(payload["marker_gap_semantics"], "black_edge_to_edge")
-        self.assertEqual(payload["marker_center_distance_mm"], 195.0)
+        self.assertEqual(payload["marker_center_distance_mm"], 190.0)
 
-    def test_175_mm_is_not_treated_as_center_spacing(self) -> None:
-        geometry = RigGeometry(marker_edge_gap_mm=175.0)
+    def test_170_mm_is_not_treated_as_center_spacing(self) -> None:
+        geometry = RigGeometry(marker_edge_gap_mm=170.0)
 
-        self.assertNotEqual(geometry.marker_center_distance_mm, 175.0)
+        self.assertNotEqual(geometry.marker_center_distance_mm, 170.0)
         self.assertEqual(
             geometry.marker_center_distance_mm,
             geometry.marker_edge_gap_mm + geometry.marker_size_mm,

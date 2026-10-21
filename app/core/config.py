@@ -15,7 +15,8 @@ CHARUCO_FOOT_RIG_PROFILE_COMMIT = (
 )
 CHARUCO_FOOT_REQUIRED_MARKER_IDS = (1, 4)
 CHARUCO_FOOT_MARKER_SIZE_MM = 20.0
-CHARUCO_FOOT_MARKER_EDGE_GAP_MM = 175.0
+# Measured black-edge gap on the physical foot rig.
+CHARUCO_FOOT_MARKER_EDGE_GAP_MM = 170.0
 # Legacy uniform correction; active per-foot offsets are configured below.
 CHARUCO_FOOT_HEEL_OFFSET_MM = 114.0
 CHARUCO_FOOT_BOARD_WIDTH_MM = 365.0
@@ -390,7 +391,7 @@ class Settings(BaseSettings):
     aruco_allow_calibration_resize: bool = False
     aruco_undistort_balance: float = 0.0
     aruco_max_camera_rms_px: float = Field(default=1.0, gt=0.0)
-    # ID 1/4 base profile from ChArUco commit 36b4db1, with the active heel correction above.
+    # ID 1/4 base profile from ChArUco commit 36b4db1, with measured rig dimensions.
     aruco_marker_size_mm: float = Field(
         default=CHARUCO_FOOT_MARKER_SIZE_MM,
         gt=0.0,
@@ -405,7 +406,7 @@ class Settings(BaseSettings):
         gt=0.0,
     )
     aruco_left_heel_offset_mm: float = Field(default=114.0, gt=0.0)
-    aruco_right_heel_offset_mm: float = Field(default=117.0, gt=0.0)
+    aruco_right_heel_offset_mm: float = Field(default=114.0, gt=0.0)
     aruco_board_width_mm: float = Field(
         default=CHARUCO_FOOT_BOARD_WIDTH_MM,
         gt=0.0,
