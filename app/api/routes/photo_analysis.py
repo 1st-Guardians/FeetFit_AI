@@ -1240,6 +1240,9 @@ def _json_safe_fact(value: Any) -> Any:
 def _tinea_side_facts(result: Any) -> dict[str, object]:
     return {
         "fungal_suspicion_safety_score": int(result.fungal_safety_score),
+        "fungal_signal_detected": _json_safe_fact(result.metrics.get("fungal_signal_detected")),
+        "fungal_score_label": _json_safe_fact(result.metrics.get("fungal_score_label")),
+        "fungal_pixel_ratio": _json_safe_fact(result.metrics.get("fungal_pixel_ratio")),
         "skin_reaction_safety_score": int(result.skin_reaction_safety_score),
         "inflammation_analysis_enabled": _json_safe_fact(
             result.metrics.get("inflammation_analysis_enabled", True)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from io import BytesIO
@@ -20,9 +21,12 @@ from app.core.weights import weights
 from app.tinea.segmentation import FungalSegmenter, PREPROCESSING_POLICY
 from app.services.wound_analysis import WoundPrediction, get_wound_analyzer
 from app.services.tinea_policy import (
+    FUNGAL_AREA_SCORE_SENSITIVITY,
+    FUNGAL_PRESENT_SAFETY_SCORE,
     LESION_AREA_SCORE_SENSITIVITY,
     LESION_PRESENT_SAFETY_SCORE,
     TINEA_SIGNAL_SAFETY_SCORE_CUTOFF,
+    fungal_safety_score_from_area,
     lesion_safety_score_from_area,
     safety_score_indicates_tinea_signal,
 )
@@ -417,6 +421,7 @@ def class_score_metrics(
     threshold: float,
     *,
     restrict_confidence_to_mask: bool = False,
+    area_score: Callable[[float], float] = lesion_safety_score_from_area,
 ) -> dict:
     foot_region = foot_mask > 0
     foot_pixels = int(foot_region.sum())
@@ -446,13 +451,13 @@ def class_score_metrics(
         "pixel_ratio": round(float(pixel_ratio), 6),
         "confidence_weighted_ratio": round(confidence_weighted_ratio, 6),
         "burden": round(float(burden), 6),
-        "score": lesion_safety_score_from_area(pixel_ratio),
+        "score": area_score(pixel_ratio),
         "detection_score": score_from_burden(burden, settings.score_sensitivity),
     }
 
 
 def score_label(score: float) -> str:
-    if score >= 90.0:
+    if not safety_score_indicates_tinea_signal(score):
         return "healthy"
     if score >= 70.0:
         return "mild"
@@ -475,6 +480,7 @@ def compute_health_scores(
     fungal = class_score_metrics(
         probs[1], fungal_mask, foot_mask, fungal_threshold,
         restrict_confidence_to_mask=restrict_fungal_confidence_to_mask,
+        area_score=fungal_safety_score_from_area,
     )
     inflammation_enabled = settings.tinea_inflammation_enabled
     if not inflammation_enabled:
@@ -498,6 +504,9 @@ def compute_health_scores(
         "fungal_confidence_weighted_ratio": fungal["confidence_weighted_ratio"],
         "fungal_burden": fungal["burden"],
         "fungal_score": fungal["score"],
+        "fungal_score_formula": "100 if no final lesion else 94 * exp(-4 * final_area_ratio)",
+        "fungal_score_present_baseline": FUNGAL_PRESENT_SAFETY_SCORE,
+        "fungal_score_sensitivity": FUNGAL_AREA_SCORE_SENSITIVITY,
         "fungal_detection_score": fungal["detection_score"],
         "fungal_score_label": score_label(fungal["score"]),
         "inflammation_pixels_in_foot": inflammation["pixels"],

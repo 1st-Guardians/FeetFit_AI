@@ -8,21 +8,37 @@ from collections.abc import Iterable
 # meaningful visible signal. Keep the decision in one place so report text and
 # rendered segmentation cannot disagree about borderline model activations.
 TINEA_SIGNAL_SAFETY_SCORE_CUTOFF = 95
+FUNGAL_PRESENT_SAFETY_SCORE = 94.0
+FUNGAL_AREA_SCORE_SENSITIVITY = 4.0
 LESION_PRESENT_SAFETY_SCORE = 65.0
 LESION_AREA_SCORE_SENSITIVITY = 7.0
 
 
-def lesion_safety_score_from_area(area_ratio: float) -> float:
-    """Start detected lesions at 65 and decrease with their final foot coverage."""
-
+def _area_safety_score(area_ratio: float, baseline: float, sensitivity: float) -> float:
     ratio = float(area_ratio)
     if not math.isfinite(ratio) or not 0.0 <= ratio <= 1.0:
         raise ValueError("Lesion area ratio must be finite and between 0 and 1.")
     if ratio == 0.0:
         return 100.0
     return round(
-        LESION_PRESENT_SAFETY_SCORE * math.exp(-LESION_AREA_SCORE_SENSITIVITY * ratio),
+        baseline * math.exp(-sensitivity * ratio),
         2,
+    )
+
+
+def fungal_safety_score_from_area(area_ratio: float) -> float:
+    """Score final fungal coverage gently while retaining a visible signal below 95."""
+
+    return _area_safety_score(
+        area_ratio, FUNGAL_PRESENT_SAFETY_SCORE, FUNGAL_AREA_SCORE_SENSITIVITY,
+    )
+
+
+def lesion_safety_score_from_area(area_ratio: float) -> float:
+    """Keep the existing 65-point baseline for wound/skin-reaction coverage."""
+
+    return _area_safety_score(
+        area_ratio, LESION_PRESENT_SAFETY_SCORE, LESION_AREA_SCORE_SENSITIVITY,
     )
 
 

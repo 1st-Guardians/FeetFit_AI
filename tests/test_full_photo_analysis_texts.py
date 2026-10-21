@@ -380,13 +380,14 @@ class FullPhotoAnalysisGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("과내전, 과외전은 평가하거나 언급하지 않는다", prompt)
         self.assertIn("비진단 안내 문장도 작성하지 않는다", prompt)
         self.assertIn("백팔십 자 이내의 한국어 한 문장", prompt)
-        self.assertIn("백 점에 가까울수록 의심 신호가 적고 안전", prompt)
-        self.assertIn("영 점에 가까울수록 의심 신호가 강하다", prompt)
+        self.assertIn("백 점에 가까울수록 사진상 최종 검출 면적이 적", prompt)
+        self.assertIn("점수를 질환의 확률이나 임상 중증도로 해석하지 않는다", prompt)
+        self.assertIn("점수가 구십 점대여도", prompt)
         self.assertEqual(
             request["user_payload"]["safety_score_semantics"],
             {
                 "direction": "higher_is_safer_lower_is_stronger_signal",
-                "aggregation": "arithmetic_mean_of_two_dorsal_feet_half_up",
+                "aggregation": "minimum_of_two_dorsal_feet_half_up",
                 "instruction": (
                     "낮은 안전 점수를 건강하거나 의심 신호가 적다는 뜻으로 해석하지 않는다."
                 ),

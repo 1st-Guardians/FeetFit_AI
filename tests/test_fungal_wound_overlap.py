@@ -166,6 +166,22 @@ class FungalWoundScoringIntegrationTests(unittest.TestCase):
         injury = cv2.imdecode(np.frombuffer(result.wound_mask_png, np.uint8), cv2.IMREAD_GRAYSCALE) > 0
         return result, injury
 
+    def test_small_final_fungal_region_keeps_nineties_score_and_detection(self):
+        fungal = np.zeros(self.foot.shape, dtype=np.float32)
+        fungal[10:20, 10:20] = 0.97
+        result, wound_mask = self.analyze(fungal, np.zeros_like(fungal))
+
+        self.assertEqual(result.fungal_safety_score, 90)
+        self.assertEqual(result.metrics["fungal_score"], 90.31)
+        self.assertEqual(result.metrics["fungal_score_label"], "mild")
+        self.assertEqual(result.metrics["overall_health_label"], "mild")
+        self.assertTrue(result.metrics["fungal_signal_detected"])
+        self.assertTrue(result.metrics["fungal_regions"])
+        np.testing.assert_array_equal(result.authoritative_fungal_mask, fungal >= 0.78)
+        self.assertFalse(wound_mask.any())
+        self.assertEqual(result.skin_reaction_safety_score, 100)
+        self.assertTrue(report._side_payload(result)["fungal_signal_detected"])
+
     def test_partial_overlap_updates_both_scores_and_exported_masks(self):
         fungal = np.zeros(self.foot.shape, dtype=np.float32)
         fungal[10:60, 10:50] = 0.96

@@ -50,6 +50,22 @@ def _result(
 
 
 class DorsalOnlyReportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_nineties_fungal_score_preserves_detection_in_report_and_gpt_facts(self):
+        left, right = _result(90, 100), _result(100, 100)
+        left.metrics.update(fungal_signal_detected=True, fungal_score_label="mild")
+        right.metrics.update(fungal_signal_detected=False, fungal_score_label="healthy")
+        fallback = service.build_fallback_tinea_report_text(left, right)
+        self.assertIn("무좀 의심 신호가", fallback.fungal_suspicion_safety_description)
+        self.assertNotIn("관찰되지", fallback.fungal_suspicion_safety_description)
+        create = AsyncMock(side_effect=RuntimeError("offline"))
+        with patch.object(service, "_openai_enabled", return_value=True), patch.object(service, "_create_structured_response", create):
+            result = await service.generate_tinea_report_text(left, right)
+        self.assertEqual(result, fallback)
+        facts = create.await_args.kwargs["user_payload"]["left_foot"]
+        self.assertTrue(facts["fungal_signal_detected"])
+        self.assertEqual(facts["fungal_score_label"], "mild")
+        self.assertEqual(facts["fungal_safety_score"], 90)
+
     def test_plantar_scores_and_findings_never_influence_fallback(self):
         left, right = _result(97, 96, fungal_location="발등 중앙부"), _result(98, 97)
         baseline = service.build_fallback_tinea_report_text(left, right)

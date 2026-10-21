@@ -673,7 +673,10 @@ _FUNGAL_WOUND_REPORT_INSTRUCTIONS = (
     "서버는 무좀과 상처의 겹침을 모델 신뢰도로 정리하며 동률은 무좀으로 처리한다. "
     "무좀 영역 안에 포함되거나 둘러싸인 상처는 무좀으로 통합한다. "
     "최종 facts의 영역과 wound_detected만 설명 근거로 사용하고, "
-    "통합되어 제외된 상처를 원본 사진에서 다시 추가하거나 무좀 안에 염증·상처가 있다고 설명하지 않는다."
+    "통합되어 제외된 상처를 원본 사진에서 다시 추가하거나 무좀 안에 염증·상처가 있다고 설명하지 않는다. "
+    "무좀 점수는 사진에서 최종 검출된 영역의 면적에 따른 표시 지표이며 질환의 확률이나 임상 중증도가 아니다. "
+    "fungal_signal_detected가 true이거나 fungal_regions에 영역이 있으면 점수가 구십 점대여도 "
+    "무좀 의심 영역이 있다는 사실을 유지하고 정상 또는 미검출로 설명하지 않는다."
 )
 _SKIN_IMAGE_REPORT_INSTRUCTIONS = (
     "이번 요청에서는 염증 검출기가 꺼져 있어 피부 자극 측정값은 제공되지 않는다. "
@@ -788,6 +791,7 @@ def _side_payload(result: Any, *, omit_skin_measurements: bool = False) -> dict:
         "fungal_safety_score": getattr(result, "fungal_safety_score", None),
         "skin_reaction_safety_score": getattr(result, "skin_reaction_safety_score", None),
         "fungal_score_label": metrics.get("fungal_score_label"),
+        "fungal_signal_detected": metrics.get("fungal_signal_detected"),
         "fungal_analysis_enabled": metrics.get("fungal_analysis_enabled", True),
         "fungal_assessment_source": metrics.get("fungal_model", "unknown"),
         "sam_inflammation_class_used": metrics.get("sam_inflammation_class_used", False),
@@ -2105,8 +2109,8 @@ async def generate_full_photo_analysis_texts(
         "생성한 분석 이미지를 함께 검토해 사용자용 한국어 설명을 작성한다. 제공된 facts의 "
         "각도·점수·치수는 서버가 확정한 값이므로 재계산, 추정, 반올림, 변경하지 않는다. "
         "fungal_suspicion_safety_score와 skin_reaction_safety_score는 모두 안전 점수다. "
-        "백 점에 가까울수록 의심 신호가 적고 안전하며, 영 점에 가까울수록 의심 신호가 "
-        "강하다. 낮은 안전 점수를 낮은 위험이나 건강한 상태로 반대로 해석하지 않는다. "
+        "백 점에 가까울수록 사진상 최종 검출 면적이 적으며, 영 점에 가까울수록 넓다. "
+        "점수를 질환의 확률이나 임상 중증도로 해석하지 않는다. "
         "final_scores는 항목별로 양발 발등 중 더 낮은 안전 점수를 서버가 확정한 값이며, "
         "의심 영역 검출 시 기준 안전 점수에서 시작해 최종 의심 면적 비율이 클수록 낮아진다. "
         "각 부위 점수와 의심 영역을 함께 반영해 설명의 강도를 일치시킨다. "
@@ -2179,7 +2183,7 @@ async def generate_full_photo_analysis_texts(
             ),
             "safety_score_semantics": {
                 "direction": "higher_is_safer_lower_is_stronger_signal",
-                "aggregation": "arithmetic_mean_of_two_dorsal_feet_half_up",
+                "aggregation": "minimum_of_two_dorsal_feet_half_up",
                 "instruction": (
                     "낮은 안전 점수를 건강하거나 의심 신호가 적다는 뜻으로 해석하지 않는다."
                 ),

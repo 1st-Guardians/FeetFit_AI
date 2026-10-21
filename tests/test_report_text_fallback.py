@@ -33,6 +33,20 @@ def _response_data(result: service.FullPhotoAnalysisTexts) -> dict:
 
 
 class FactBasedPhotoFallbackTests(unittest.TestCase):
+    def test_nineties_fungal_score_still_reports_a_suspicion_signal(self) -> None:
+        for score in (90, 94):
+            with self.subTest(score=score):
+                facts = _facts()
+                facts["tinea_pedis"]["final_scores"] = {
+                    "fungal_suspicion_safety_score": score,
+                    "skin_reaction_safety_score": 100,
+                }
+                result = service.build_fallback_full_photo_analysis_texts(facts=facts)
+                self.assertIn("무좀 의심 신호가", result.fungal_suspicion_safety_description)
+                self.assertNotIn("관찰되지", result.fungal_suspicion_safety_description)
+                self.assertIn("무좀 의심 신호가", result.total_score_description)
+                service._validate_full_photo_response_data(_response_data(result))
+
     def test_safe_scores_do_not_invent_skin_findings(self) -> None:
         facts = _facts()
         facts["tinea_pedis"]["final_scores"] = {
