@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 
-# Contour HVA v6 parameters supplied for the hallux-valgus pipeline.
+# Supplied contour HVA parameters, adapted to the server's per-foot pipeline.
 MIN_MASK_AREA = 5000
 MORPH_KERNEL = 7
 
@@ -41,16 +41,16 @@ RANSAC_DISTANCE_RATIO = 0.012
 
 MAX_INTERSECTION_DISTANCE_W = 0.90
 
-HALLUX_LINE_LENGTH_W = 0.385
 REFERENCE_LINE_LENGTH_W = 0.525
 
-FOOT_LINE_COLOR = (26, 26, 26, 255)
+FOOT_LINE_COLOR = (166, 166, 166, 255)
 FOOT_FILL_COLOR = (255, 255, 255, 255)
 AXIS_COLOR = (255, 136, 0, 255)
 
-CONTOUR_THICKNESS = 3
-LINE_THICKNESS = 5
-INTERSECTION_RADIUS = 5
+CONTOUR_THICKNESS = 2
+LINE_THICKNESS = 3
+INTERSECTION_RADIUS = 3
+AXIS_INNER_MARGIN_W = 0.07
 CROP_PADDING = 10
 
 
@@ -675,6 +675,8 @@ def draw_hallux_line_to_intersection(
     intersection: np.ndarray,
     direction: np.ndarray,
     length: float,
+    color: int | tuple[int, int, int, int] = AXIS_COLOR,
+    thickness: int = LINE_THICKNESS,
 ) -> None:
     unit_direction = normalize(direction)
     start = tuple(np.round(intersection - unit_direction * length).astype(int))
@@ -683,8 +685,8 @@ def draw_hallux_line_to_intersection(
         image,
         start,
         end,
-        AXIS_COLOR,
-        LINE_THICKNESS,
+        color,
+        thickness,
         cv2.LINE_AA,
     )
 
@@ -694,6 +696,8 @@ def draw_reference_line_from_intersection(
     intersection: np.ndarray,
     direction: np.ndarray,
     length: float,
+    color: int | tuple[int, int, int, int] = AXIS_COLOR,
+    thickness: int = LINE_THICKNESS,
 ) -> None:
     unit_direction = normalize(direction)
     start = tuple(np.round(intersection).astype(int))
@@ -702,8 +706,8 @@ def draw_reference_line_from_intersection(
         image,
         start,
         end,
-        AXIS_COLOR,
-        LINE_THICKNESS,
+        color,
+        thickness,
         cv2.LINE_AA,
     )
 
@@ -744,7 +748,7 @@ def visualize_result(
     image_shape: tuple[int, int] | tuple[int, int, int],
     result: dict[str, Any],
 ) -> np.ndarray:
-    """Render the supplied white-filled foot and axes on a transparent background."""
+    """Render the supplied inset axes and white-filled foot on a transparent background."""
 
     height, width = image_shape[:2]
     canvas = np.zeros((height, width, 4), dtype=np.uint8)
@@ -763,26 +767,49 @@ def visualize_result(
         CONTOUR_THICKNESS,
         cv2.LINE_AA,
     )
+    # Clip the lines, marker, and antialiasing to an inset beyond the contour stroke.
+    foot_mask = np.zeros((height, width), dtype=np.uint8)
+    cv2.fillPoly(foot_mask, [contour], 255)
+    margin = max(3, int(round(foot_width * AXIS_INNER_MARGIN_W)))
+    inset = margin + math.ceil(CONTOUR_THICKNESS / 2) + 1
+    inner_mask = cv2.erode(
+        foot_mask,
+        np.ones((2 * inset + 1, 2 * inset + 1), dtype=np.uint8),
+        borderType=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    axis_mask = np.zeros((height, width), dtype=np.uint8)
     draw_hallux_line_to_intersection(
-        canvas,
+        axis_mask,
         intersection,
         hallux_direction,
-        foot_width * HALLUX_LINE_LENGTH_W,
+        math.hypot(height, width),
+        255,
+        LINE_THICKNESS,
     )
     draw_reference_line_from_intersection(
-        canvas,
+        axis_mask,
         intersection,
         reference_direction,
         foot_width * REFERENCE_LINE_LENGTH_W,
+        255,
+        LINE_THICKNESS,
     )
     cv2.circle(
-        canvas,
+        axis_mask,
         tuple(np.round(intersection).astype(int)),
         INTERSECTION_RADIUS,
-        AXIS_COLOR,
+        255,
         -1,
         cv2.LINE_AA,
     )
+    axis_mask = cv2.bitwise_and(axis_mask, inner_mask)
+    painted = axis_mask > 0
+    coverage = axis_mask[painted].astype(np.float32)[:, None] / 255.0
+    canvas[painted] = np.rint(
+        canvas[painted] * (1.0 - coverage)
+        + np.asarray(AXIS_COLOR, dtype=np.float32) * coverage
+    ).astype(np.uint8)
     cropped = crop_single_foot(canvas, source_contour)
     if cropped is None:
         raise ValueError("Could not crop the hallux contour visualization.")
