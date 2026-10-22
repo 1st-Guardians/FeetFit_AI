@@ -279,6 +279,22 @@ curl -X POST "http://localhost:8000/api/reports/hallux-valgus" \
   -F "rightFootImage=@right-foot.jpeg;type=image/jpeg"
 ```
 
+### Pressure distribution scoring
+
+`pressure-balance-v3` compares regional sums with quiet-standing reference intervals:
+
+| Region | Canonical sensors | Reference share |
+| --- | --- | --- |
+| Forefoot, including toes | C0-C4 | 25-40% |
+| Midfoot | C5-C8 | 10-15% |
+| Heel | C9-C11 | 45-55% |
+
+Each region's share is its sensor-value sum divided by that foot's total. Sensor-count-adjusted means are retained only as observation metadata. For each interval `[L, U]` and regional percentage `p`, the deviation is `max(L - p, p - U, 0)` percentage points. Sum the three deviations as `D`; the per-foot score is `max(0, 100 - 2 * D)`. Scores use unrounded shares. The final balance score retains `0.6 * bilateralBalanceScore + 0.2 * leftDistributionScore + 0.2 * rightDistributionScore`. No-load and one-foot-only frames remain inconclusive.
+
+The source is [Hussain et al., PLOS ONE, 2026](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0358764), a quiet-standing study using a 32x32 FSR matrix with 2,200 participants who passed its fitness criteria. Forefoot 25-40% is an adaptation obtained by adding the reported metatarsal 17-27% and toe 8-13% interval bounds, rather than a separately measured combined interval. The two-point penalty and transfer to FeetFit's sparse sensor layout are provisional and are not validated diagnostic thresholds.
+
+The pressure API receives sensor loads already calibrated by the hardware. All channels on both feet must use the same load unit. The server uses these values directly, normalizing only the right-foot channel order before regional aggregation, and does not recalibrate them. Facts identify the input as `upstream_calibrated_load` with `serverCalibrationApplied: false`, alongside the source DOI, ranges, regional deviations, coefficient, and adaptation status. A high score describes agreement with these configured intervals, not a medical diagnosis.
+
 ### `POST /api/reports/foot-type-text`
 
 Feetfit_Server의 measurement session이 `COMPLETED`로 commit된 뒤 Server가

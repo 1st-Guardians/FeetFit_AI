@@ -38,13 +38,20 @@ class PressureHeatmapRequest(PressureMeasurementIdentity):
 
     left_pressure_values: list[PressureValue] = Field(
         alias="leftPressureValues", min_length=12, max_length=12,
-        description="Exactly 12 finite, non-negative left-foot sensor values.",
+        description=(
+            "Exactly 12 finite, non-negative left-foot loads already calibrated "
+            "by the hardware, in toe-first C0-C11 order. All sensors on both "
+            "feet must use the same load unit; the server does not recalibrate them."
+        ),
     )
     right_pressure_values: list[PressureValue] = Field(
         alias="rightPressureValues", min_length=12, max_length=12,
-        description=("Exactly 12 finite, non-negative right-foot hardware values in "
-                     "heel-first order; the server reverses them into the shared "
-                     "toe-first C0-C11 analysis layout."),
+        description=(
+            "Exactly 12 finite, non-negative right-foot loads already calibrated "
+            "by the hardware, in heel-first order and the same load unit as the "
+            "left foot. The server reverses them into the shared toe-first "
+            "C0-C11 analysis layout without recalibration."
+        ),
     )
 
     @field_validator("left_pressure_values", "right_pressure_values", mode="before")

@@ -673,13 +673,17 @@ def _raw_load_percentages(
     status_code=status.HTTP_202_ACCEPTED,
     summary="좌우 압력 히트맵·자세 균형 분석 및 저장",
     description=(
-        "Validates exactly 12 measured pressure values for each foot and "
+        "Validates exactly 12 hardware-calibrated load values for each foot, "
+        "in the same unit across all sensors and both feet, and "
         "returns 202 Accepted after registering an independent background job. "
         "The job renders both heatmaps locally and computes the authoritative "
         "score deterministically as 60% "
-        "bilateral load balance plus 20% for each foot's non-clinical, sensor-count-"
-        "adjusted three-zone spread index. It performs four backend saves: raw "
-        "left C0-C11 and right heel-first raw values with heatmaps, load "
+        "bilateral load balance plus 20% for each foot's provisional three-zone "
+        "reference-range score using summed sensor values: forefoot 25-40%, "
+        "midfoot 10-15%, heel 45-55%, with two points deducted per percentage "
+        "point outside the intervals. Input loads are already calibrated; "
+        "the server does not recalibrate them. It performs four backend saves: "
+        "original left C0-C11 and right heel-first values with heatmaps, load "
         "percentages with pressure images, the "
         "balance score/comment, and the PRESSURE_BALANCE summary. GPT generates "
         "only non-diagnostic left/right regional observations, an overall balance "

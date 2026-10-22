@@ -26,7 +26,73 @@ def _right_hardware(canonical_values: list[float]) -> list[float]:
     return list(reversed(canonical_values))
 
 
+def _regional_values(forefoot: float, midfoot: float, heel: float) -> list[float]:
+    return [forefoot / 5.0] * 5 + [midfoot / 4.0] * 4 + [heel / 3.0] * 3
+
+
 class PressureBalanceFactsTests(unittest.TestCase):
+    def test_reference_intervals_include_their_boundaries_with_heel_dominance(self) -> None:
+        for regions in ((35, 15, 50), (40, 15, 45), (35, 10, 55)):
+            with self.subTest(regions=regions):
+                values = _regional_values(*regions)
+                facts = service.build_pressure_balance_facts(values, _right_hardware(values))
+                self.assertEqual(facts["leftDistributionScore"], 100)
+                self.assertEqual(facts["rightDistributionScore"], 100)
+                self.assertEqual(facts["balanceScore"], 100)
+                self.assertEqual(facts["leftReferenceDeviationPercentagePoints"], 0)
+                self.assertEqual(facts["leftDistributionLevel"], "WITHIN_REFERENCE")
+                self.assertIn("HEEL", facts["leftDominantZones"])
+                text = service._pressure_fallback_components(facts)[0]
+                self.assertIn("참고 범위 안", text)
+                self.assertNotIn("고르게 분산", text)
+
+    def test_equal_regional_thirds_are_penalized_against_reference_ranges(self) -> None:
+        values = _regional_values(100 / 3, 100 / 3, 100 / 3)
+        facts = service.build_pressure_balance_facts(values, _right_hardware(values))
+        self.assertEqual(facts["leftReferenceDeviationPercentagePoints"], 30)
+        self.assertEqual(facts["leftDistributionScore"], 40)
+        self.assertEqual(facts["balanceScore"], 76)
+        self.assertEqual(facts["leftDistributionLevel"], "OUTSIDE_REFERENCE")
+
+    def test_both_above_and_below_interval_deviations_use_percentage_points(self) -> None:
+        for regions, deviations, score in (
+            ((50, 20, 30), {"forefoot": 10, "midfoot": 5, "heel": 15}, 40),
+            ((20, 20, 60), {"forefoot": 5, "midfoot": 5, "heel": 5}, 70),
+        ):
+            with self.subTest(regions=regions):
+                values = _regional_values(*regions)
+                facts = service.build_pressure_balance_facts(values, _right_hardware(values))
+                self.assertEqual(facts["leftZoneReferenceDeviationPercentagePoints"], deviations)
+                self.assertEqual(facts["leftReferenceDeviationPercentagePoints"], sum(deviations.values()))
+                self.assertEqual(facts["leftDistributionScore"], score)
+                self.assertEqual(facts["rightDistributionScore"], score)
+
+    def test_single_zone_loading_is_clamped_to_zero(self) -> None:
+        for regions in ((100, 0, 0), (0, 100, 0), (0, 0, 100)):
+            with self.subTest(regions=regions):
+                values = _regional_values(*regions)
+                facts = service.build_pressure_balance_facts(values, _right_hardware(values))
+                self.assertEqual(facts["leftDistributionScore"], 0)
+                self.assertEqual(facts["balanceScore"], 60)
+
+    def test_unrounded_shares_determine_score_and_reference_status(self) -> None:
+        for forefoot, midfoot, expected_score in ((40.06, 14.94, 99.9), (40.01, 14.99, 100.0)):
+            with self.subTest(forefoot=forefoot):
+                values = _regional_values(forefoot, midfoot, 45)
+                facts = service.build_pressure_balance_facts(values, _right_hardware(values))
+                self.assertEqual(facts["leftDistributionScore"], expected_score)
+                self.assertEqual(facts["leftDistributionLevel"], "OUTSIDE_REFERENCE")
+                self.assertEqual(facts["leftReferenceDeviationPercentagePoints"], round(forefoot - 40, 2))
+
+    def test_common_input_scale_does_not_change_distribution_or_bilateral_scores(self) -> None:
+        values = _regional_values(35, 15, 50)
+        baseline = service.build_pressure_balance_facts(values, _right_hardware(values))
+        scaled = [value * 170 for value in values]
+        facts = service.build_pressure_balance_facts(scaled, _right_hardware(scaled))
+        for field in ("leftZonePercent", "rightZonePercent", "leftDistributionScore",
+                      "rightDistributionScore", "bilateralBalanceScore", "balanceScore"):
+            self.assertEqual(facts[field], baseline[field])
+
     def test_heel_first_right_hardware_sample_is_canonicalized_for_zone_facts(self) -> None:
         left = [
             64.0, 44.7, 39.3, 27.3, 16.6, 574.3,
@@ -47,7 +113,7 @@ class PressureBalanceFactsTests(unittest.TestCase):
         self.assertEqual(facts["leftLoadPercent"], 54.3)
         self.assertEqual(facts["rightLoadPercent"], 45.7)
 
-    def test_balanced_identical_frames_have_exact_facts_and_zone_groups(self) -> None:
+    def test_equal_sensor_values_are_not_an_ideal_regional_split(self) -> None:
         facts = service.build_pressure_balance_facts([1.0] * 12, [1.0] * 12)
 
         self.assertEqual(
@@ -63,14 +129,14 @@ class PressureBalanceFactsTests(unittest.TestCase):
                 "leftActiveSensorCount": 12,
                 "rightActiveSensorCount": 12,
                 "bilateralBalanceScore": 100.0,
-                "leftDistributionScore": 100.0,
-                "rightDistributionScore": 100.0,
-                "distributionScore": 100.0,
-                "balanceScore": 100.0,
+                "leftDistributionScore": 20.0,
+                "rightDistributionScore": 20.0,
+                "distributionScore": 20.0,
+                "balanceScore": 68.0,
                 "scoreComponents": {
                     "bilateralBalanceScore": 100.0,
-                    "leftDistributionScore": 100.0,
-                    "rightDistributionScore": 100.0,
+                    "leftDistributionScore": 20.0,
+                    "rightDistributionScore": 20.0,
                 },
                 "scoreWeights": {
                     "bilateralBalance": 0.6,
@@ -82,18 +148,36 @@ class PressureBalanceFactsTests(unittest.TestCase):
                     "+ 0.2 * rightDistributionScore"
                 ),
                 "distributionScoreFormula": (
-                    "100 * max(0, 1 - sum(abs(sensorCountAdjustedZoneShare - 1/3)) / (4/3))"
+                    "max(0, 100 - 2 * sum(max(lowerPercent - zonePercent, "
+                    "zonePercent - upperPercent, 0)))"
                 ),
-                "formulaVersion": "pressure-balance-v2",
+                "formulaVersion": "pressure-balance-v3",
                 "zoneAdjustmentFormula": (
-                    "zoneMean = zoneSum / zoneSensorCount; adjustedZoneShare = "
-                    "zoneMean / sum(allZoneMeans)"
+                    "zoneShare = zoneSum / footTotal; "
+                    "sensor-count-adjusted percentages are observation-only"
                 ),
                 "distributionScoreMetadata": {
                     "provisional": True,
                     "nonClinical": True,
-                    "meaning": "sensor-count-adjusted three-zone spread index",
+                    "meaning": "summed regional sensor shares compared with reference intervals",
+                    "referenceDoi": "10.1371/journal.pone.0358764",
+                    "referenceRangesPercent": {
+                        "forefoot": [25.0, 40.0], "midfoot": [10.0, 15.0], "heel": [45.0, 55.0],
+                    },
+                    "forefootRangeDerivation": "sum of metatarsal and toe interval bounds",
+                    "penaltyPerPercentagePoint": 2.0,
+                    "twelveSensorAdaptationValidated": False,
+                    "serverCalibrationApplied": False,
+                    "inputBasis": "upstream_calibrated_load",
                 },
+                "leftZoneReferenceDeviationPercentagePoints": {
+                    "forefoot": 1.67, "midfoot": 18.33, "heel": 20.0,
+                },
+                "rightZoneReferenceDeviationPercentagePoints": {
+                    "forefoot": 1.67, "midfoot": 18.33, "heel": 20.0,
+                },
+                "leftReferenceDeviationPercentagePoints": 40.0,
+                "rightReferenceDeviationPercentagePoints": 40.0,
                 "loadBalanceLevel": "BALANCED",
                 "qualityStatus": "valid",
                 "leftRawZoneLoadPercent": {
@@ -107,14 +191,14 @@ class PressureBalanceFactsTests(unittest.TestCase):
                     "heel": 25.0,
                 },
                 "leftZonePercent": {
-                    "forefoot": 33.3,
+                    "forefoot": 41.7,
                     "midfoot": 33.3,
-                    "heel": 33.4,
+                    "heel": 25.0,
                 },
                 "rightZonePercent": {
-                    "forefoot": 33.3,
+                    "forefoot": 41.7,
                     "midfoot": 33.3,
-                    "heel": 33.4,
+                    "heel": 25.0,
                 },
                 "leftSensorCountAdjustedZonePercent": {
                     "forefoot": 33.3,
@@ -126,10 +210,10 @@ class PressureBalanceFactsTests(unittest.TestCase):
                     "midfoot": 33.3,
                     "heel": 33.4,
                 },
-                "leftDominantZones": ["FOREFOOT", "MIDFOOT", "HEEL"],
-                "rightDominantZones": ["FOREFOOT", "MIDFOOT", "HEEL"],
-                "leftDistributionLevel": "BROADLY_DISTRIBUTED",
-                "rightDistributionLevel": "BROADLY_DISTRIBUTED",
+                "leftDominantZones": ["FOREFOOT"],
+                "rightDominantZones": ["FOREFOOT"],
+                "leftDistributionLevel": "OUTSIDE_REFERENCE",
+                "rightDistributionLevel": "OUTSIDE_REFERENCE",
                 "dominantFoot": "BALANCED",
             },
         )
@@ -138,13 +222,13 @@ class PressureBalanceFactsTests(unittest.TestCase):
         )
         self.assertEqual(
             left_fallback,
-            "왼발은 앞꿈치·중족부·뒤꿈치 세 구역에 압력이 비교적 고르게 분산되는 경향이 관찰됩니다.",
+            "왼발은 앞꿈치 구역의 압력 비중이 상대적으로 크며 일부 구역의 비율이 설정한 참고 범위를 벗어납니다.",
         )
         self.assertEqual(
             right_fallback,
-            "오른발은 앞꿈치·중족부·뒤꿈치 세 구역에 압력이 비교적 고르게 분산되는 경향이 관찰됩니다.",
+            "오른발은 앞꿈치 구역의 압력 비중이 상대적으로 크며 일부 구역의 비율이 설정한 참고 범위를 벗어납니다.",
         )
-        self.assertNotIn("상대적으로 크", left_fallback)
+        self.assertNotIn("고르게 분산", left_fallback)
 
     def test_score_is_explainable_weighted_bilateral_and_per_foot_composite(self) -> None:
         left, right = _proportional_values()
@@ -171,7 +255,7 @@ class PressureBalanceFactsTests(unittest.TestCase):
         self.assertEqual(facts["dominantFoot"], "LEFT")
         self.assertEqual(facts["loadBalanceLevel"], "STRONG_ONE_SIDED")
 
-    def test_user_sample_has_complementary_percentages_and_v2_composite(self) -> None:
+    def test_user_sample_has_complementary_percentages_and_v3_composite(self) -> None:
         left = [
             50.5,
             0.0,
@@ -207,9 +291,9 @@ class PressureBalanceFactsTests(unittest.TestCase):
         self.assertEqual(facts["loadDifferencePercentagePoints"], 1.6)
         self.assertEqual(facts["loadImbalancePercent"], 1.6)
         self.assertEqual(facts["bilateralBalanceScore"], 98.4)
-        self.assertEqual(facts["leftDistributionScore"], 34.1)
-        self.assertEqual(facts["rightDistributionScore"], 35.0)
-        self.assertEqual(facts["balanceScore"], 72.9)
+        self.assertEqual(facts["leftDistributionScore"], 0.0)
+        self.assertEqual(facts["rightDistributionScore"], 0.0)
+        self.assertEqual(facts["balanceScore"], 59.0)
         self.assertEqual(facts["loadBalanceLevel"], "BALANCED")
         self.assertEqual(facts["leftDominantZones"], ["HEEL"])
         self.assertEqual(facts["rightDominantZones"], ["HEEL"])
@@ -229,7 +313,7 @@ class PressureBalanceFactsTests(unittest.TestCase):
         self.assertEqual(facts["loadDifferencePercentagePoints"], 33.4)
         self.assertEqual(facts["bilateralBalanceScore"], 66.6)
 
-    def test_profile_asymmetry_is_observation_only_while_zone_spread_affects_score(self) -> None:
+    def test_profile_asymmetry_is_observation_only_while_reference_distance_affects_score(self) -> None:
         left = [1.0] * 6 + [0.0] * 6
         right = _right_hardware([0.0] * 6 + [1.0] * 6)
 
@@ -239,9 +323,9 @@ class PressureBalanceFactsTests(unittest.TestCase):
         self.assertEqual(facts["rightLoadPercent"], 50.0)
         self.assertEqual(facts["profileAsymmetryPercent"], 100.0)
         self.assertEqual(facts["bilateralBalanceScore"], 100.0)
-        self.assertEqual(facts["leftDistributionScore"], 30.0)
-        self.assertEqual(facts["rightDistributionScore"], 50.0)
-        self.assertEqual(facts["balanceScore"], 76.0)
+        self.assertEqual(facts["leftDistributionScore"], 0.0)
+        self.assertEqual(facts["rightDistributionScore"], 0.0)
+        self.assertEqual(facts["balanceScore"], 60.0)
 
     def test_extreme_one_sided_load_has_fixed_low_score_and_explicit_level(self) -> None:
         facts = service.build_pressure_balance_facts(
@@ -275,7 +359,7 @@ class PressureBalanceFactsTests(unittest.TestCase):
     def test_zone_gap_within_five_points_is_reported_as_mixed_dominance(self) -> None:
         # Forefoot and midfoot differ by less than five percentage points;
         # heel remains clearly below both.
-        values = [10.0] + [0.0] * 4 + [7.8] + [0.0] * 3 + [1.0] + [0.0] * 2
+        values = [10.0] + [0.0] * 4 + [9.6] + [0.0] * 3 + [1.0] + [0.0] * 2
 
         facts = service.build_pressure_balance_facts(
             values,
@@ -314,15 +398,15 @@ class PressureBalanceFactsTests(unittest.TestCase):
         self.assertEqual(one_side["leftDominantZones"], [])
         self.assertEqual(
             one_side["rightDominantZones"],
-            ["FOREFOOT", "MIDFOOT", "HEEL"],
+            ["FOREFOOT"],
         )
         self.assertIsNone(one_side["bilateralBalanceScore"])
         self.assertIsNone(one_side["leftDistributionScore"])
-        self.assertEqual(one_side["rightDistributionScore"], 100.0)
+        self.assertEqual(one_side["rightDistributionScore"], 20.0)
         self.assertEqual(one_side["leftDistributionLevel"], "INCONCLUSIVE")
         self.assertEqual(
             one_side["rightDistributionLevel"],
-            "BROADLY_DISTRIBUTED",
+            "OUTSIDE_REFERENCE",
         )
 
     def test_invalid_sensor_frames_are_rejected(self) -> None:
@@ -357,7 +441,7 @@ class PressureBalanceGenerationTests(unittest.IsolatedAsyncioTestCase):
         left = [2.0] * 5 + [0.5] * 7
         right = _right_hardware(left)
         facts = service.build_pressure_balance_facts(left, right)
-        self.assertEqual(facts["leftDistributionLevel"], "PARTLY_CONCENTRATED")
+        self.assertEqual(facts["leftDistributionLevel"], "OUTSIDE_REFERENCE")
         self.assertEqual(facts["leftDominantZones"], ["FOREFOOT"])
         generated = {
             "leftRegionalObservation": (
@@ -550,8 +634,8 @@ class PressureBalanceGenerationTests(unittest.IsolatedAsyncioTestCase):
                 left_pressure_values=left, right_pressure_values=right, pressure_facts=facts,
                 left_heatmap_png=LEFT_PNG, right_heatmap_png=RIGHT_PNG,
             )
-        self.assertEqual(facts["leftDistributionLevel"], "CONCENTRATED")
-        self.assertEqual(facts["rightDistributionLevel"], "CONCENTRATED")
+        self.assertEqual(facts["leftDistributionLevel"], "OUTSIDE_REFERENCE")
+        self.assertEqual(facts["rightDistributionLevel"], "OUTSIDE_REFERENCE")
         self.assertEqual(facts["leftDominantZones"], ["FOREFOOT"])
         self.assertEqual(facts["rightDominantZones"], ["FOREFOOT"])
         create_response.assert_awaited_once()
@@ -802,16 +886,16 @@ class PressureBalanceGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failure.exception.field, "practicalTip")
         self.assertEqual(failure.exception.rule_code, "TEXT_REQUIRED")
 
-    async def test_broad_distribution_prompt_and_provider_text_are_preserved(self) -> None:
-        left = [1.0] * 12
-        right = [1.0] * 12
+    async def test_reference_distribution_prompt_and_provider_text_are_preserved(self) -> None:
+        left = [7.0] * 5 + [3.75] * 4 + [50.0 / 3.0] * 3
+        right = _right_hardware(left)
         facts = service.build_pressure_balance_facts(left, right)
         generated = {
             "leftRegionalObservation": (
-                "왼발은 앞꿈치·중족부·뒤꿈치 세 구역에 압력이 비교적 고르게 분산되는 경향이 관찰됩니다."
+                "왼발은 뒤꿈치 구역의 비중이 가장 크며 세 구역의 비율은 설정한 참고 범위 안에 있습니다."
             ),
             "rightRegionalObservation": (
-                "오른발은 앞꿈치·중족부·뒤꿈치 세 구역에 압력이 비교적 고르게 분산되는 경향이 관찰됩니다."
+                "오른발은 뒤꿈치 구역의 비중이 가장 크며 세 구역의 비율은 설정한 참고 범위 안에 있습니다."
             ),
             "overallBalanceObservation": (
                 "좌우 발에 전달된 압력이 비교적 고르게 분포하는 경향이 관찰됩니다."

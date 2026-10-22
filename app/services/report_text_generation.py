@@ -2604,13 +2604,23 @@ _PRESSURE_SCORE_FORMULA = (
     "+ 0.2 * rightDistributionScore"
 )
 _PRESSURE_DISTRIBUTION_SCORE_FORMULA = (
-    "100 * max(0, 1 - sum(abs(sensorCountAdjustedZoneShare - 1/3)) / (4/3))"
+    "max(0, 100 - 2 * sum(max(lowerPercent - zonePercent, "
+    "zonePercent - upperPercent, 0)))"
 )
 _PRESSURE_ZONE_ADJUSTMENT_FORMULA = (
-    "zoneMean = zoneSum / zoneSensorCount; adjustedZoneShare = "
-    "zoneMean / sum(allZoneMeans)"
+    "zoneShare = zoneSum / footTotal; "
+    "sensor-count-adjusted percentages are observation-only"
 )
-_PRESSURE_FORMULA_VERSION = "pressure-balance-v2"
+# Adapted from quiet-standing FSR results, DOI: 10.1371/journal.pone.0358764.
+# Forefoot combines the metatarsal (17-27%) and toe (8-13%) interval bounds.
+# The transfer to this 12-sensor layout and the penalty coefficient are provisional.
+_PRESSURE_REFERENCE_RANGES_PERCENT = {
+    "forefoot": (25.0, 40.0),
+    "midfoot": (10.0, 15.0),
+    "heel": (45.0, 55.0),
+}
+_PRESSURE_REFERENCE_PENALTY = 2.0
+_PRESSURE_FORMULA_VERSION = "pressure-balance-v3"
 
 
 def _validated_pressure_values(
@@ -2683,6 +2693,18 @@ def _pressure_sensor_count_adjusted_zone_shares(
     return {zone: zone_mean / mean_total for zone, zone_mean in zone_means.items()}
 
 
+def _pressure_load_zone_shares(
+    values: tuple[float, ...],
+    total: float,
+) -> dict[str, float]:
+    if total <= 0.0:
+        return {zone: 0.0 for zone in _PRESSURE_ZONE_RANGES}
+    return {
+        zone: math.fsum(values[start:end]) / total
+        for zone, (start, end) in _PRESSURE_ZONE_RANGES.items()
+    }
+
+
 def _rounded_zone_percentages_from_shares(
     zone_shares: dict[str, float],
     *,
@@ -2699,36 +2721,32 @@ def _rounded_zone_percentages_from_shares(
     return rounded
 
 
+def _pressure_reference_deviations(zone_shares: dict[str, float]) -> dict[str, float]:
+    """Measure distance outside each interval in percentage points, before rounding."""
+
+    return {
+        zone: max(
+            lower - zone_shares[zone] * 100.0,
+            zone_shares[zone] * 100.0 - upper,
+            0.0,
+        )
+        for zone, (lower, upper) in _PRESSURE_REFERENCE_RANGES_PERCENT.items()
+    }
+
+
 def _pressure_distribution_score(zone_shares: dict[str, float]) -> float:
-    """Return a non-clinical three-zone spread index on a 0-100 scale.
+    """Score summed regional shares against provisional reference intervals."""
 
-    A score of 100 means the sensor-count-adjusted mean loads are split equally
-    among the three configured longitudinal zones. A score of 0 means all
-    measured load is in one zone. This is deliberately a transparent,
-    provisional dispersion index, not a normal/abnormal plantar-pressure
-    classification.
-    """
-
-    target_share = 1.0 / len(_PRESSURE_ZONE_RANGES)
-    maximum_absolute_deviation = 4.0 / 3.0
-    absolute_deviation = math.fsum(
-        abs(share - target_share) for share in zone_shares.values()
-    )
-    score = 100.0 * max(
-        0.0,
-        1.0 - absolute_deviation / maximum_absolute_deviation,
-    )
-    return round(min(100.0, score), 1)
+    deviation = math.fsum(_pressure_reference_deviations(zone_shares).values())
+    return round(max(0.0, 100.0 - _PRESSURE_REFERENCE_PENALTY * deviation), 1)
 
 
-def _pressure_distribution_level(score: float | None) -> str:
-    if score is None:
+def _pressure_distribution_level(deviations: dict[str, float] | None) -> str:
+    if deviations is None:
         return "INCONCLUSIVE"
-    if score >= 80.0:
-        return "BROADLY_DISTRIBUTED"
-    if score >= 50.0:
-        return "PARTLY_CONCENTRATED"
-    return "CONCENTRATED"
+    if all(value <= 1e-9 for value in deviations.values()):
+        return "WITHIN_REFERENCE"
+    return "OUTSIDE_REFERENCE"
 
 
 def _dominant_pressure_zones(
@@ -2759,10 +2777,11 @@ def build_pressure_balance_facts(
     """Build authoritative, non-diagnostic pressure-balance measurements.
 
     The final score is a deterministic weighted composite: 60% bilateral load
-    balance plus 20% for each foot's transparent three-zone dispersion index.
-    The dispersion index uses equal thirds only as a mathematical spread
-    reference; it is not a clinical normal-pressure reference. GPT never
-    calculates or changes these values. Missing load on either side is marked
+    balance plus 20% for each foot's three-zone reference-range score.
+    Regional percentages use sums of loads already calibrated by the hardware
+    in a common unit across all sensors and both feet. No additional calibration
+    is performed here. GPT never calculates or changes
+    these values. Missing load on either side is marked
     inconclusive with a nullable score instead of being presented as imbalance.
     """
 
@@ -2830,11 +2849,11 @@ def build_pressure_balance_facts(
 
     left_raw_zone_load_percent = _pressure_zone_percentages(left, left_total)
     right_raw_zone_load_percent = _pressure_zone_percentages(right, right_total)
-    left_zone_shares = _pressure_sensor_count_adjusted_zone_shares(
+    left_zone_shares = _pressure_load_zone_shares(
         left,
         left_total,
     )
-    right_zone_shares = _pressure_sensor_count_adjusted_zone_shares(
+    right_zone_shares = _pressure_load_zone_shares(
         right,
         right_total,
     )
@@ -2845,6 +2864,12 @@ def build_pressure_balance_facts(
     right_zone_percent = _rounded_zone_percentages_from_shares(
         right_zone_shares,
         total=right_total,
+    )
+    left_deviations = (
+        _pressure_reference_deviations(left_zone_shares) if left_total > 0.0 else None
+    )
+    right_deviations = (
+        _pressure_reference_deviations(right_zone_shares) if right_total > 0.0 else None
     )
     left_distribution_score = (
         _pressure_distribution_score(left_zone_shares)
@@ -2907,16 +2932,45 @@ def build_pressure_balance_facts(
         "distributionScoreMetadata": {
             "provisional": True,
             "nonClinical": True,
-            "meaning": "sensor-count-adjusted three-zone spread index",
+            "meaning": "summed regional sensor shares compared with reference intervals",
+            "referenceDoi": "10.1371/journal.pone.0358764",
+            "referenceRangesPercent": {
+                zone: list(bounds) for zone, bounds in _PRESSURE_REFERENCE_RANGES_PERCENT.items()
+            },
+            "forefootRangeDerivation": "sum of metatarsal and toe interval bounds",
+            "penaltyPerPercentagePoint": _PRESSURE_REFERENCE_PENALTY,
+            "twelveSensorAdaptationValidated": False,
+            "serverCalibrationApplied": False,
+            "inputBasis": "upstream_calibrated_load",
         },
+        "leftZoneReferenceDeviationPercentagePoints": (
+            {zone: round(value, 2) for zone, value in left_deviations.items()}
+            if left_deviations is not None else None
+        ),
+        "rightZoneReferenceDeviationPercentagePoints": (
+            {zone: round(value, 2) for zone, value in right_deviations.items()}
+            if right_deviations is not None else None
+        ),
+        "leftReferenceDeviationPercentagePoints": (
+            round(math.fsum(left_deviations.values()), 2)
+            if left_deviations is not None else None
+        ),
+        "rightReferenceDeviationPercentagePoints": (
+            round(math.fsum(right_deviations.values()), 2)
+            if right_deviations is not None else None
+        ),
         "loadBalanceLevel": load_balance_level,
         "qualityStatus": quality_status,
         "leftRawZoneLoadPercent": left_raw_zone_load_percent,
         "rightRawZoneLoadPercent": right_raw_zone_load_percent,
         "leftZonePercent": left_zone_percent,
         "rightZonePercent": right_zone_percent,
-        "leftSensorCountAdjustedZonePercent": left_zone_percent,
-        "rightSensorCountAdjustedZonePercent": right_zone_percent,
+        "leftSensorCountAdjustedZonePercent": _rounded_zone_percentages_from_shares(
+            _pressure_sensor_count_adjusted_zone_shares(left, left_total), total=left_total,
+        ),
+        "rightSensorCountAdjustedZonePercent": _rounded_zone_percentages_from_shares(
+            _pressure_sensor_count_adjusted_zone_shares(right, right_total), total=right_total,
+        ),
         "leftDominantZones": _dominant_pressure_zones(
             left_zone_percent,
             total=left_total,
@@ -2926,10 +2980,10 @@ def build_pressure_balance_facts(
             total=right_total,
         ),
         "leftDistributionLevel": _pressure_distribution_level(
-            left_distribution_score
+            left_deviations
         ),
         "rightDistributionLevel": _pressure_distribution_level(
-            right_distribution_score
+            right_deviations
         ),
         "dominantFoot": dominant_foot,
     }
@@ -2963,32 +3017,20 @@ def _regional_pressure_observation(
     distribution_level: str,
 ) -> str:
     labels = [_PRESSURE_ZONE_LABELS[zone] for zone in zones]
-    if distribution_level == "BROADLY_DISTRIBUTED" and len(labels) == len(
-        _PRESSURE_ZONE_LABELS
-    ):
-        return (
-            f"{side_label}은 {'·'.join(labels)} 세 구역에 압력이 비교적 고르게 "
-            "분산되는 경향이 관찰됩니다."
-        )
     if len(labels) == 1:
         zone_text = labels[0]
         dominant_clause = f"{zone_text} 구역의 압력 비중이 상대적으로"
     else:
         zone_text = "와 ".join(labels)
         dominant_clause = f"{zone_text} 구역의 압력 비중이 함께 상대적으로"
-    if distribution_level == "BROADLY_DISTRIBUTED":
+    if distribution_level == "WITHIN_REFERENCE":
         return (
-            f"{side_label}은 {dominant_clause} 크지만 세 구역에 "
-            "압력이 비교적 고르게 분산되는 경향이 관찰됩니다."
-        )
-    if distribution_level == "PARTLY_CONCENTRATED":
-        return (
-            f"{side_label}은 {dominant_clause} 크며 구역별 압력 "
-            "비중에 일부 차이가 관찰됩니다."
+            f"{side_label}은 {dominant_clause} 크며 세 구역의 비율은 "
+            "설정한 참고 범위 안에 있습니다."
         )
     return (
-        f"{side_label}은 {dominant_clause} 크고 특정 구역에 압력이 "
-        "집중되는 경향이 관찰됩니다."
+        f"{side_label}은 {dominant_clause} 크며 일부 구역의 비율이 "
+        "설정한 참고 범위를 벗어납니다."
     )
 
 
@@ -3169,8 +3211,9 @@ async def generate_pressure_balance_report(
                 "balanceScore, bilateralBalanceScore, leftDistributionScore, "
                 "rightDistributionScore와 scoreComponents/scoreWeights/scoreFormula는 서버가 "
                 "확정한 값이다. 모델은 점수를 계산, 추정, 보정, 변경하거나 출력하지 않는다. "
-                "각 발 distributionScore는 세 구역을 동일 비중 기준과 비교한 설명용 분산도 "
-                "지수이며 임상 정상치나 좋은 발을 뜻하지 않는다."
+                "각 발 distributionScore는 세 구역의 센서값 합계 비율이 설정한 참고 범위를 "
+                "벗어난 퍼센트포인트의 합에 따라 감점한 제품 지표다. 임상 정상치나 좋은 발을 "
+                "뜻하지 않으며 점수의 감점 계수와 이 센서 배치에 대한 의학적 검증은 없다."
             ),
             "one_sided_load_contract": (
                 "loadBalanceLevel이 STRONG_ONE_SIDED 또는 EXTREME_ONE_SIDED이면 "
@@ -3184,14 +3227,11 @@ async def generate_pressure_balance_report(
                 "leftDominantZones와 rightDominantZones의 모든 구역을 각각 왼발과 오른발 "
                 "관찰에 정확히 포함하고, 우세하지 않은 구역을 우세하다고 표현하지 않는다. "
                 "FOREFOOT은 앞꿈치, MIDFOOT은 중족부, HEEL은 뒤꿈치라는 표현만 사용한다. "
-                "각 발 DistributionLevel이 BROADLY_DISTRIBUTED일 때만 '비교적 고르게 분산'을 "
-                "사용한다. 세 구역이 모두 dominant이면 '앞꿈치·중족부·뒤꿈치 세 구역에 "
-                "압력이 비교적 고르게 분산'처럼 우세 구역 없이 직접 표현한다. "
-                "PARTLY_CONCENTRATED는 '구역별 비중에 일부 차이', CONCENTRATED는 "
-                "'특정 구역에 집중되는 경향'으로 표현한다. "
-                "이 구역별 분산도와 구역 안의 국소적인 색 집중은 서로 다른 관찰이다. "
-                "세 구역에 비교적 고르게 분산되어도 각 구역 내부에 좁은 고강도 부분이 "
-                "보일 수 있으므로 이를 모순으로 취급하지 않는다."
+                "앞꿈치·중족부·뒤꿈치 세 구역을 동일한 비중으로 평가하지 않는다. "
+                "각 발 DistributionLevel이 WITHIN_REFERENCE이면 '설정한 참고 범위 안', "
+                "OUTSIDE_REFERENCE이면 '일부 구역이 설정한 참고 범위를 벗어남'으로 표현한다. "
+                "참고 범위 안에 있어도 뒤꿈치 비중이 가장 클 수 있다. "
+                "구역별 참고 범위와 구역 안의 국소적인 색 집중은 서로 다른 관찰이다."
             ),
             "heatmap_reading_contract": {
                 "source_role": "spatial_visual_evidence",
@@ -3245,7 +3285,7 @@ async def generate_pressure_balance_report(
             "output_contract": (
                 "점수나 숫자를 출력하지 않고 왼발 구역 관찰, 오른발 구역 관찰, 전체 좌우 "
                 "균형 관찰, 실천 팁을 각각 백팔십 자 이내의 한국어 한 문장으로 작성한다. "
-                "각 발 관찰은 해당 발 이름으로 시작해 수치로 확인된 우세 구역과 분산도에 "
+                "각 발 관찰은 해당 발 이름으로 시작해 수치로 확인된 우세 구역과 참고 범위에 "
                 "히트맵의 시각적 특징을 결합한다. 예를 들어 실제 이미지에서 확인될 때만 "
                 "'왼발은 앞꿈치 구역의 압력 비중이 상대적으로 크며 히트맵에서도 강한 색 "
                 "영역이 좁게 모이는 집중 경향이 관찰됩니다.'처럼 쓴다. 실천 팁은 일상에서 "
@@ -3260,7 +3300,7 @@ async def generate_pressure_balance_report(
                 "leftRegionalObservation": {
                     "type": "string",
                     "description": (
-                        "왼발로 시작하는 한 문장: 서버가 정한 우세 구역과 구역별 분산도, "
+                        "왼발로 시작하는 한 문장: 서버가 정한 우세 구역과 구역별 참고 범위, "
                         "왼발 히트맵에서 직접 확인되는 고강도 영역의 모임·퍼짐·연속성 "
                         "중 구체적인 특징을 함께 설명한다."
                     ),
@@ -3268,7 +3308,7 @@ async def generate_pressure_balance_report(
                 "rightRegionalObservation": {
                     "type": "string",
                     "description": (
-                        "오른발로 시작하는 한 문장: 서버가 정한 우세 구역과 구역별 분산도, "
+                        "오른발로 시작하는 한 문장: 서버가 정한 우세 구역과 구역별 참고 범위, "
                         "오른발 히트맵에서 직접 확인되는 고강도 영역의 모임·퍼짐·연속성 "
                         "중 구체적인 특징을 함께 설명한다."
                     ),
@@ -3301,15 +3341,15 @@ async def generate_pressure_balance_report(
                 "먼저 두 히트맵을 각각 자세히 확인하고, 각 발의 강한 색이 국소적으로 "
                 "모이는지, 여러 곳으로 나뉘는지, 넓게 이어지는지를 관찰한다. "
                 "이 시각적 특징을 각 발의 구역 관찰에 구체적으로 반영하고 서버 계산 "
-                "facts는 점수·비율·우세 구역·구역별 분산도의 확정 근거로 사용한다. "
+                "facts는 점수·비율·우세 구역·구역별 참고 범위의 확정 근거로 사용한다. "
                 "히트맵에서 확인되지 않는 색이나 공간적 양상을 수치만 보고 만들어내지 "
                 "않는다. 각 발의 zone facts에서 우세 구역만 정확히 언급하고 왼발과 "
                 "오른발을 서로 바꾸지 않는다. 오른발 히트맵의 표시용 수평 반전을 안쪽과 바깥쪽 "
                 "근거로 해석하지 않는다. dominantFoot와 loadBalanceLevel도 서로 모순 없이 "
                 "반영한다. 점수와 비율은 서버 확정값이며 계산하거나 수정하지 않는다. "
-                "각 발 DistributionLevel에 맞춰 비교적 고르게 분산 또는 특정 구역에 상대적으로 "
-                "집중되는 경향을 설명하며 해당 구역 안의 시각적 특징을 함께 담는다. "
-                "구역 평균의 분산도와 구역 내부의 국소 색 집중을 구분한다. "
+                "각 발 DistributionLevel에 맞춰 설정한 참고 범위 안인지 벗어나는지 설명하며 "
+                "해당 구역 안의 시각적 특징을 함께 담는다. "
+                "구역별 참고 범위와 구역 내부의 국소 색 집중을 구분한다. "
                 "이를 정상/비정상 또는 좋은/나쁜 발로 해석하지 않는다. "
                 "아치 형태, 안쪽과 바깥쪽 분포, 과내전, 과외전, 평발, 요족은 추론하지 않는다. "
                 "네 필드는 각각 한국어 한 문장이어야 하며 숫자, 점수, 질환명, 진단, 확진, 판정, "
